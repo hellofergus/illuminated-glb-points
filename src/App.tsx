@@ -67,6 +67,11 @@ export default function App() {
     pointCount: 0
   });
 
+  // Visual State
+  const [maxPointSize, setMaxPointSize] = useState<number>(100);
+  const maxPointSizeRef = useRef(maxPointSize);
+  useEffect(() => { maxPointSizeRef.current = maxPointSize; }, [maxPointSize]);
+
   // Brush State
   const [brushSettings, setBrushSettings] = useState({
     enabled: false,
@@ -557,6 +562,16 @@ export default function App() {
     }
   }, [params.pointSizeMultiplier]);
 
+  // Live update for max point size
+  useEffect(() => {
+    if (sceneRef.current?.points) {
+      const material = sceneRef.current.points.material as THREE.ShaderMaterial;
+      if (material.uniforms?.uMaxPointSize) {
+        material.uniforms.uMaxPointSize.value = maxPointSize;
+      }
+    }
+  }, [maxPointSize]);
+
   const handleAutoDepth = async () => {
     if (!sourceImgRef.current) return;
     setIsAutoDepthLoading(true);
@@ -946,10 +961,12 @@ export default function App() {
 
     const material = new THREE.ShaderMaterial({
       uniforms: {
-        uPointSizeScale: { value: params.pointSizeMultiplier }
+        uPointSizeScale: { value: params.pointSizeMultiplier },
+        uMaxPointSize: { value: maxPointSizeRef.current }
       },
       vertexShader: `
         uniform float uPointSizeScale;
+        uniform float uMaxPointSize;
         attribute float size;
         attribute float selected;
         attribute float visibility;
@@ -961,7 +978,7 @@ export default function App() {
           vSelected = selected;
           vVisibility = visibility;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = size * uPointSizeScale * mix(1.0, 1.75, selected) * (500.0 / -mvPosition.z);
+          gl_PointSize = min(size * uPointSizeScale * mix(1.0, 1.75, selected) * (500.0 / -mvPosition.z), uMaxPointSize);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -1171,6 +1188,8 @@ export default function App() {
           sourceImg={sourceImg}
           updateSavedSelectionName={updateSavedSelectionName}
           deleteSavedSelection={deleteSavedSelection}
+          maxPointSize={maxPointSize}
+          setMaxPointSize={setMaxPointSize}
         />
 
         {/* Right Content: Previews & Visualizers */}

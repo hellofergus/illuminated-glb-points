@@ -51,6 +51,8 @@ type ControlSidebarProps = {
   sourceImg: string | null;
   updateSavedSelectionName: (selectionId: string, name: string) => void;
   deleteSavedSelection: (selectionId: string) => void;
+  maxPointSize: number;
+  setMaxPointSize: (value: number) => void;
 };
 
 export function ControlSidebar({
@@ -86,7 +88,9 @@ export function ControlSidebar({
   showPointIndices,
   sourceImg,
   updateSavedSelectionName,
-  deleteSavedSelection
+  deleteSavedSelection,
+  maxPointSize,
+  setMaxPointSize
 }: ControlSidebarProps) {
   return (
     <aside className="w-[320px] border-r border-tech-border bg-tech-sidebar p-6 flex flex-col gap-8 overflow-y-auto scrollbar-hide">
@@ -190,6 +194,15 @@ export function ControlSidebar({
               type="range" min="0.1" max="50" step="0.1"
               value={params.pointSizeMultiplier}
               onChange={(e) => setParams({ ...params, pointSizeMultiplier: parseFloat(e.target.value) })}
+              className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+            />
+          </div>
+          <div>
+            <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Max Point Size</span><span>{maxPointSize}px</span></div>
+            <input
+              type="range" min="1" max="500" step="1"
+              value={maxPointSize}
+              onChange={(e) => setMaxPointSize(parseInt(e.target.value))}
               className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
             />
           </div>
