@@ -28,6 +28,10 @@ import {
 import { processImages, exportToGLB, getAutoDepthMap, SamplingParams, PointData } from './processing/pointSampler';
 
 export default function App() {
+  const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
+  const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
+  const clampSoftnessPercent = (percent: number) => Math.min(100, Math.max(0, percent));
+
   // UI State
   const [sourceImg, setSourceImg] = useState<string | null>(null);
   const [depthImg, setDepthImg] = useState<string | null>(null);
@@ -65,6 +69,42 @@ export default function App() {
   useEffect(() => { brushSettingsRef.current = brushSettings; }, [brushSettings]);
   useEffect(() => { isBrushingRef.current = isBrushing; }, [isBrushing]);
   useEffect(() => { isAltNavigationRef.current = isAltNavigationActive; }, [isAltNavigationActive]);
+
+  const adjustBrushSize = (delta: number) => {
+    setBrushSettings((prev) => ({
+      ...prev,
+      size: clampBrushSize(prev.size + delta)
+    }));
+  };
+
+  const setBrushSoftnessPercent = (percent: number) => {
+    const clampedPercent = clampSoftnessPercent(percent);
+    setBrushSettings((prev) => ({
+      ...prev,
+      softness: clampedPercent / 100
+    }));
+  };
+
+  const setBrushStrengthPercent = (percent: number) => {
+    const clampedPercent = clampBrushStrengthPercent(percent);
+    setBrushSettings((prev) => ({
+      ...prev,
+      strength: clampedPercent / 100
+    }));
+  };
+
+  const adjustBrushStrengthPercent = (delta: number) => {
+    setBrushStrengthPercent(Math.round(brushSettingsRef.current.strength * 100) + delta);
+  };
+
+  const isEditableTarget = (target: EventTarget | null) => {
+    return target instanceof HTMLElement && (
+      target.isContentEditable ||
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT'
+    );
+  };
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -136,6 +176,8 @@ export default function App() {
     points: THREE.Points | null;
     pointIndexLabels: THREE.Group | null;
   } | null>(null);
+  const brushStrengthPercent = Math.round(brushSettings.strength * 100);
+  const brushSoftnessPercent = Math.round(brushSettings.softness * 100);
 
   // Initialize Three.js
   useEffect(() => {
@@ -220,7 +262,23 @@ export default function App() {
           worldPos.copy(pos).applyMatrix4(pointCloud.matrixWorld);
           
           const dist = worldPos.distanceTo(center);
-          if (dist < settings.size) {
+          const normalizedDistance = dist / settings.size;
+          if (normalizedDistance >= 1) continue;
+
+          const featherStart = 1 - settings.softness;
+          let coverage = normalizedDistance <= featherStart ? 1 : 0;
+
+          if (coverage === 0 && settings.softness > 0) {
+            const featherProgress = (normalizedDistance - featherStart) / settings.softness;
+            coverage = 1 - Math.min(Math.max(featherProgress, 0), 1);
+          }
+
+          const pointNoise = Math.abs(
+            Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
+          );
+          const effectProbability = coverage * settings.strength;
+
+          if (effectProbability >= pointNoise) {
             visibilityAttr.setX(i, settings.mode === 'hide' ? 0.0 : 1.0);
           }
         }
@@ -286,10 +344,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (sceneRef.current?.pointIndexLabels) {
-      sceneRef.current.pointIndexLabels.visible = showPointIndices;
-    }
-  }, [showPointIndices]);
+    rebuildPointIndexLabels(points);
+  }, [showPointIndices, points]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'source' | 'depth') => {
     const file = e.target.files?.[0];
@@ -427,6 +483,59 @@ export default function App() {
     setRedoStack(prev => prev.slice(0, -1));
   };
 
+  useEffect(() => {
+    const handleShortcutKeyDown = (event: KeyboardEvent) => {
+      if (isEditableTarget(event.target)) return;
+
+      if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+
+      if (!brushSettings.enabled || event.altKey || event.metaKey) return;
+
+      if (event.key === '[') {
+        event.preventDefault();
+        adjustBrushSize(-5);
+        return;
+      }
+
+      if (event.key === ']') {
+        event.preventDefault();
+        adjustBrushSize(5);
+        return;
+      }
+
+      if (event.key === ',') {
+        event.preventDefault();
+        adjustBrushStrengthPercent(-5);
+        return;
+      }
+
+      if (event.key === '.') {
+        event.preventDefault();
+        adjustBrushStrengthPercent(5);
+        return;
+      }
+
+      if (!event.ctrlKey && /^[0-9]$/.test(event.key)) {
+        event.preventDefault();
+        setBrushSoftnessPercent(event.key === '0' ? 100 : Number(event.key) * 10);
+      }
+    };
+
+    window.addEventListener('keydown', handleShortcutKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleShortcutKeyDown);
+    };
+  }, [brushSettings.enabled, handleRedo, handleUndo]);
+
   const disposePointIndexLabels = (labelGroup: THREE.Group | null) => {
     if (!labelGroup) return;
 
@@ -436,6 +545,23 @@ export default function App() {
       material.map?.dispose();
       material.dispose();
     });
+  };
+
+  const rebuildPointIndexLabels = (targetPoints: PointData[]) => {
+    if (!sceneRef.current) return;
+
+    if (sceneRef.current.pointIndexLabels) {
+      sceneRef.current.scene.remove(sceneRef.current.pointIndexLabels);
+      disposePointIndexLabels(sceneRef.current.pointIndexLabels);
+      sceneRef.current.pointIndexLabels = null;
+    }
+
+    if (!showPointIndices || targetPoints.length === 0) return;
+
+    const labelGroup = createPointIndexLabels(targetPoints);
+    sceneRef.current.scene.add(labelGroup);
+    sceneRef.current.pointIndexLabels = labelGroup;
+    syncPointIndexLabelVisibility();
   };
 
   const syncPointIndexLabelVisibility = () => {
@@ -565,11 +691,7 @@ export default function App() {
     const pointsMesh = new THREE.Points(geometry, material);
     sceneRef.current.scene.add(pointsMesh);
     sceneRef.current.points = pointsMesh;
-
-    const pointIndexLabels = createPointIndexLabels(targetPoints);
-    sceneRef.current.scene.add(pointIndexLabels);
-    sceneRef.current.pointIndexLabels = pointIndexLabels;
-    syncPointIndexLabelVisibility();
+    rebuildPointIndexLabels(targetPoints);
     
     // Fit camera to object
     const box = new THREE.Box3().setFromObject(pointsMesh);
@@ -921,7 +1043,27 @@ export default function App() {
                   />
                 </div>
 
-                <div className="text-[8px] opacity-40 font-mono italic">Camera rotation is locked while brush is active.</div>
+                <div>
+                  <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Strength</span><span>{brushStrengthPercent}%</span></div>
+                  <input 
+                    type="range" min="1" max="100" step="1" 
+                    value={brushStrengthPercent} 
+                    onChange={(e) => setBrushStrengthPercent(parseInt(e.target.value))}
+                    className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Softness</span><span>{brushSoftnessPercent}%</span></div>
+                  <input 
+                    type="range" min="0" max="100" step="1" 
+                    value={brushSoftnessPercent} 
+                    onChange={(e) => setBrushSoftnessPercent(parseInt(e.target.value))}
+                    className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+
+                <div className="text-[8px] opacity-40 font-mono italic">Strength changes how many points are affected, not opacity. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
               </div>
             )}
           </section>
