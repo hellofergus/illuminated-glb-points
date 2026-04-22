@@ -26,6 +26,7 @@ import {
   Redo
 } from 'lucide-react';
 import { processImages, exportToGLB, getAutoDepthMap, SamplingParams, PointData } from './processing/pointSampler';
+import { BrushMode, findNearestHit, getIndicesInRectangle, mergeSelectionIndices, shouldApplyBrushEffect, type ScreenPointHit } from './processing/pointInteraction';
 
 type SavedSelection = {
   id: string;
@@ -71,7 +72,7 @@ export default function App() {
     size: 20,
     strength: 1.0,
     softness: 0.5,
-    mode: 'hide' as 'hide' | 'reveal'
+    mode: 'hide' as BrushMode
   });
   const [isBrushing, setIsBrushing] = useState(false);
   const [isAltNavigationActive, setIsAltNavigationActive] = useState(false);
@@ -267,7 +268,7 @@ export default function App() {
     };
 
     const getVisibleProjectedPointIndices = () => {
-      if (!sceneRef.current?.points) return [] as Array<{ index: number; x: number; y: number }>;
+      if (!sceneRef.current?.points) return [] as ScreenPointHit[];
 
       const rect = getRendererRect();
       const pointCloud = sceneRef.current.points;
@@ -276,7 +277,7 @@ export default function App() {
       const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
       const localPoint = new THREE.Vector3();
       const worldPoint = new THREE.Vector3();
-      const hits: Array<{ index: number; x: number; y: number }> = [];
+      const hits: ScreenPointHit[] = [];
 
       sceneRef.current.camera.updateMatrixWorld();
       pointCloud.updateMatrixWorld(true);
@@ -312,22 +313,13 @@ export default function App() {
       
       const settings = brushSettingsRef.current;
       const indicator = brushIndicatorRef.current;
+      const selectionHits = getVisibleProjectedPointIndices();
 
       if (indicator) {
         if (settings.enabled && !isAltNavigationRef.current) {
           indicator.visible = true;
           indicator.scale.set(settings.size, settings.size, 1);
-          const selectionHits = getVisibleProjectedPointIndices();
-          let nearestHit: { index: number; x: number; y: number } | null = null;
-          let nearestDistance = Infinity;
-
-          selectionHits.forEach((hit) => {
-            const distance = Math.hypot(hit.x - pointer.x, hit.y - pointer.y);
-            if (distance < nearestDistance) {
-              nearestDistance = distance;
-              nearestHit = hit;
-            }
-          });
+          const nearestHit = findNearestHit(selectionHits, pointer.x, pointer.y, Number.POSITIVE_INFINITY);
 
           if (nearestHit && sceneRef.current?.points) {
             const pointCloud = sceneRef.current.points;
@@ -347,14 +339,7 @@ export default function App() {
       }
 
       // ONLY process point physics if we are actually clicking (or forced)
-      const selectionHits = getVisibleProjectedPointIndices();
-      const nearestBrushHit = selectionHits.reduce<{ index: number; x: number; y: number } | null>((nearest, hit) => {
-        const currentDistance = Math.hypot(hit.x - pointer.x, hit.y - pointer.y);
-        if (!nearest) return currentDistance <= 18 ? hit : null;
-
-        const nearestDistance = Math.hypot(nearest.x - pointer.x, nearest.y - pointer.y);
-        return currentDistance < nearestDistance ? hit : nearest;
-      }, null);
+      const nearestBrushHit = findNearestHit(selectionHits, pointer.x, pointer.y, 18);
 
       if (nearestBrushHit && settings.enabled && !isAltNavigationRef.current && (isBrushingRef.current || forcePaint)) {
         const pointCloud = sceneRef.current.points;
@@ -365,6 +350,7 @@ export default function App() {
         const center = new THREE.Vector3().fromBufferAttribute(positionAttr, nearestBrushHit.index).applyMatrix4(pointCloud.matrixWorld);
         const pos = new THREE.Vector3();
         const worldPos = new THREE.Vector3();
+        const selectedIndices: number[] = [];
         
         for (let i = 0; i < visibilityAttr.count; i++) {
           pos.fromBufferAttribute(positionAttr, i);
@@ -372,58 +358,45 @@ export default function App() {
           
           const dist = worldPos.distanceTo(center);
           const normalizedDistance = dist / settings.size;
-          if (normalizedDistance >= 1) continue;
-
-          const featherStart = 1 - settings.softness;
-          let coverage = normalizedDistance <= featherStart ? 1 : 0;
-
-          if (coverage === 0 && settings.softness > 0) {
-            const featherProgress = (normalizedDistance - featherStart) / settings.softness;
-            coverage = 1 - Math.min(Math.max(featherProgress, 0), 1);
-          }
 
           const pointNoise = Math.abs(
             Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
           );
-          const effectProbability = coverage * settings.strength;
 
-          if (effectProbability >= pointNoise) {
+          if (!shouldApplyBrushEffect(normalizedDistance, settings.softness, settings.strength, pointNoise)) {
+            continue;
+          }
+
+          if (settings.mode === 'select') {
+            selectedIndices.push(i);
+          } else {
             visibilityAttr.setX(i, settings.mode === 'hide' ? 0.0 : 1.0);
           }
         }
-        visibilityAttr.needsUpdate = true;
-        syncPointIndexLabelVisibility();
+
+        if (settings.mode === 'select') {
+          if (selectedIndices.length > 0) {
+            setSelectedPointIndices((prev) => mergeSelectionIndices(prev, selectedIndices, true, false));
+            if (forcePaint) {
+              setStatus(`Brush selected ${selectedIndices.length} points`);
+            }
+          }
+        } else {
+          visibilityAttr.needsUpdate = true;
+          syncPointIndexLabelVisibility();
+        }
       }
     };
 
     const updateSelectedPoints = (indices: number[], append: boolean, remove: boolean) => {
-      setSelectedPointIndices((prev) => {
-        const next = remove ? new Set<number>(prev) : new Set<number>(append ? prev : []);
-
-        indices.forEach((index) => {
-          if (remove) {
-            next.delete(index);
-          } else {
-            next.add(index);
-          }
-        });
-
-        return Array.from(next).sort((left, right) => left - right);
-      });
+      setSelectedPointIndices((prev) => mergeSelectionIndices(prev, indices, append, remove));
     };
 
     const selectPointAt = (clientX: number, clientY: number, append: boolean, remove: boolean) => {
       const pointer = getCanvasPointer(clientX, clientY);
       if (!pointer) return;
 
-      const nearestHit = getVisibleProjectedPointIndices().reduce<{ index: number; x: number; y: number } | null>((nearest, hit) => {
-        const currentDistance = Math.hypot(hit.x - pointer.x, hit.y - pointer.y);
-        if (currentDistance > 16) return nearest;
-        if (!nearest) return hit;
-
-        const nearestDistance = Math.hypot(nearest.x - pointer.x, nearest.y - pointer.y);
-        return currentDistance < nearestDistance ? hit : nearest;
-      }, null);
+      const nearestHit = findNearestHit(getVisibleProjectedPointIndices(), pointer.x, pointer.y, 16);
 
       if (nearestHit) {
         updateSelectedPoints([nearestHit.index], append, remove);
@@ -441,9 +414,7 @@ export default function App() {
       const top = Math.min(dragState.startY, dragState.currentY);
       const bottom = Math.max(dragState.startY, dragState.currentY);
 
-      const indices = getVisibleProjectedPointIndices()
-        .filter((hit) => hit.x >= left && hit.x <= right && hit.y >= top && hit.y <= bottom)
-        .map((hit) => hit.index);
+      const indices = getIndicesInRectangle(getVisibleProjectedPointIndices(), left, right, top, bottom);
 
       if (indices.length > 0) {
         updateSelectedPoints(indices, dragState.append, dragState.remove);
@@ -474,7 +445,9 @@ export default function App() {
 
       if (brushSettingsRef.current.enabled && e.button === 0 && !e.altKey) {
         e.preventDefault();
-        pushToHistory();
+        if (brushSettingsRef.current.mode !== 'select') {
+          pushToHistory();
+        }
         setIsBrushing(true);
         applyBrush(e.clientX, e.clientY, true);
       }
@@ -1434,7 +1407,7 @@ export default function App() {
             
             {brushSettings.enabled && (
               <div className="space-y-4 p-3 bg-tech-header/50 border border-tech-border rounded animate-in fade-in slide-in-from-top-2 duration-300">
-                <div className="flex gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <button 
                     onClick={() => setBrushSettings({...brushSettings, mode: 'hide'})}
                     className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'hide' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
@@ -1446,6 +1419,12 @@ export default function App() {
                     className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'reveal' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
                   >
                     <Paintbrush className="w-3 h-3" /> Reveal
+                  </button>
+                  <button 
+                    onClick={() => setBrushSettings({...brushSettings, mode: 'select'})}
+                    className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
+                  >
+                    <Layers className="w-3 h-3" /> Select
                   </button>
                 </div>
 
@@ -1496,7 +1475,7 @@ export default function App() {
                   />
                 </div>
 
-                <div className="text-[8px] opacity-40 font-mono italic">Strength changes how many points are affected, not opacity. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
+                <div className="text-[8px] opacity-40 font-mono italic">Brush can hide, reveal, or add to selection. Strength changes how many points are affected, not opacity. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
               </div>
             )}
           </section>
