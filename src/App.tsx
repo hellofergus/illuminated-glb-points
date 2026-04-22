@@ -26,7 +26,7 @@ import {
   Redo
 } from 'lucide-react';
 import { processImages, exportToGLB, getAutoDepthMap, SamplingParams, PointData } from './processing/pointSampler';
-import { BrushMode, findNearestHit, getIndicesInRectangle, mergeSelectionIndices, shouldApplyBrushEffect, type ScreenPointHit } from './processing/pointInteraction';
+import { BrushMode, findNearestHit, getBrushInfluence, getIndicesInRectangle, mergeSelectionIndices, shouldApplyBrushEffect, type ScreenPointHit } from './processing/pointInteraction';
 import { ControlSidebar } from './components/ControlSidebar';
 
 type SavedSelection = {
@@ -44,9 +44,15 @@ type SelectionDragState = {
   remove: boolean;
 };
 
+type HistorySnapshot = {
+  positions: Float32Array;
+  visibility: Float32Array;
+};
+
 export default function App() {
   const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
+  const clampBrushDepthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampSoftnessPercent = (percent: number) => Math.min(100, Math.max(0, percent));
 
   // UI State
@@ -78,14 +84,15 @@ export default function App() {
     size: 20,
     strength: 1.0,
     softness: 0.5,
+    depthAmount: 0.1,
     mode: 'hide' as BrushMode
   });
   const [isBrushing, setIsBrushing] = useState(false);
   const [isAltNavigationActive, setIsAltNavigationActive] = useState(false);
 
   // History State
-  const [history, setHistory] = useState<Float32Array[]>([]);
-  const [redoStack, setRedoStack] = useState<Float32Array[]>([]);
+  const [history, setHistory] = useState<HistorySnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<HistorySnapshot[]>([]);
 
   // Sync refs to avoid stale closures in event listeners
   const brushSettingsRef = useRef(brushSettings);
@@ -127,6 +134,14 @@ export default function App() {
 
   const adjustBrushStrengthPercent = (delta: number) => {
     setBrushStrengthPercent(Math.round(brushSettingsRef.current.strength * 100) + delta);
+  };
+
+  const setBrushDepthPercent = (percent: number) => {
+    const clampedPercent = clampBrushDepthPercent(percent);
+    setBrushSettings((prev: typeof brushSettings) => ({
+      ...prev,
+      depthAmount: clampedPercent / 100
+    }));
   };
 
   const isEditableTarget = (target: EventTarget | null) => {
@@ -217,6 +232,7 @@ export default function App() {
     pointIndexLabels: THREE.Group | null;
   } | null>(null);
   const brushStrengthPercent = Math.round(brushSettings.strength * 100);
+  const brushDepthPercent = Math.round(brushSettings.depthAmount * 100);
   const brushSoftnessPercent = Math.round(brushSettings.softness * 100);
   const sortedSelectedPointIndices = [...selectedPointIndices].sort((left, right) => left - right);
   const selectedPointCount = sortedSelectedPointIndices.length;
@@ -352,11 +368,14 @@ export default function App() {
         const geometry = pointCloud.geometry;
         const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
         const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+        const pointIndexLabels = sceneRef.current.pointIndexLabels;
 
         const center = new THREE.Vector3().fromBufferAttribute(positionAttr, nearestBrushHit.index).applyMatrix4(pointCloud.matrixWorld);
         const pos = new THREE.Vector3();
         const worldPos = new THREE.Vector3();
         const selectedIndices: number[] = [];
+        let affectedPointCount = 0;
+        const depthDelta = params.depthScale * settings.depthAmount;
         
         for (let i = 0; i < visibilityAttr.count; i++) {
           pos.fromBufferAttribute(positionAttr, i);
@@ -364,6 +383,7 @@ export default function App() {
           
           const dist = worldPos.distanceTo(center);
           const normalizedDistance = dist / settings.size;
+          const brushInfluence = getBrushInfluence(normalizedDistance, settings.softness);
 
           const pointNoise = Math.abs(
             Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
@@ -375,8 +395,18 @@ export default function App() {
 
           if (settings.mode === 'select') {
             selectedIndices.push(i);
+            affectedPointCount += 1;
+          } else if (settings.mode === 'push' || settings.mode === 'pull') {
+            const depthDirection = settings.mode === 'push' ? 1 : -1;
+            const nextZ = positionAttr.getZ(i) + (depthDelta * brushInfluence * depthDirection);
+            positionAttr.setZ(i, nextZ);
+            if (pointIndexLabels?.children[i]) {
+              pointIndexLabels.children[i].position.z = nextZ;
+            }
+            affectedPointCount += 1;
           } else {
             visibilityAttr.setX(i, settings.mode === 'hide' ? 0.0 : 1.0);
+            affectedPointCount += 1;
           }
         }
 
@@ -388,6 +418,12 @@ export default function App() {
             }
           }
         } else {
+          if (settings.mode === 'push' || settings.mode === 'pull') {
+            positionAttr.needsUpdate = true;
+            if (forcePaint && affectedPointCount > 0) {
+              setStatus(`Depth brushed ${affectedPointCount} points ${settings.mode === 'push' ? 'out' : 'in'}`);
+            }
+          }
           visibilityAttr.needsUpdate = true;
           syncPointIndexLabelVisibility();
         }
@@ -648,43 +684,70 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
+  const applyHistorySnapshot = (snapshot: HistorySnapshot) => {
+    if (!sceneRef.current?.points) return;
+
+    const geometry = sceneRef.current.points.geometry;
+    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
+    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+
+    visibilityAttr.array.set(snapshot.visibility);
+    visibilityAttr.needsUpdate = true;
+    positionAttr.array.set(snapshot.positions);
+    positionAttr.needsUpdate = true;
+
+    syncPointIndexLabelVisibility();
+    syncPointIndexLabelPositions();
+  };
+
   const pushToHistory = () => {
     if (!sceneRef.current?.points) return;
-    const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const currentBuffer = new Float32Array(visibilityAttr.array);
+    const geometry = sceneRef.current.points.geometry;
+    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
+    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const currentSnapshot: HistorySnapshot = {
+      visibility: new Float32Array(visibilityAttr.array),
+      positions: new Float32Array(positionAttr.array)
+    };
     
-    setHistory(prev => [...prev.slice(-19), currentBuffer]); // Keep last 20 steps
+    setHistory((prev: HistorySnapshot[]) => [...prev.slice(-19), currentSnapshot]); // Keep last 20 steps
     setRedoStack([]); // Clear redo on new action
   };
 
   const handleUndo = () => {
     if (history.length === 0 || !sceneRef.current?.points) return;
     
-    const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const currentBuffer = new Float32Array(visibilityAttr.array);
-    setRedoStack(prev => [...prev, currentBuffer]);
+    const geometry = sceneRef.current.points.geometry;
+    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
+    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const currentSnapshot: HistorySnapshot = {
+      visibility: new Float32Array(visibilityAttr.array),
+      positions: new Float32Array(positionAttr.array)
+    };
+    setRedoStack((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
-    const prevBuffer = history[history.length - 1];
-    visibilityAttr.array.set(prevBuffer);
-    visibilityAttr.needsUpdate = true;
-    syncPointIndexLabelVisibility();
+    const prevSnapshot = history[history.length - 1];
+    applyHistorySnapshot(prevSnapshot);
     
-    setHistory(prev => prev.slice(0, -1));
+    setHistory((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
 
   const handleRedo = () => {
     if (redoStack.length === 0 || !sceneRef.current?.points) return;
 
-    const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const currentBuffer = new Float32Array(visibilityAttr.array);
-    setHistory(prev => [...prev, currentBuffer]);
+    const geometry = sceneRef.current.points.geometry;
+    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
+    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const currentSnapshot: HistorySnapshot = {
+      visibility: new Float32Array(visibilityAttr.array),
+      positions: new Float32Array(positionAttr.array)
+    };
+    setHistory((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
-    const nextBuffer = redoStack[redoStack.length - 1];
-    visibilityAttr.array.set(nextBuffer);
-    visibilityAttr.needsUpdate = true;
-    syncPointIndexLabelVisibility();
+    const nextSnapshot = redoStack[redoStack.length - 1];
+    applyHistorySnapshot(nextSnapshot);
 
-    setRedoStack(prev => prev.slice(0, -1));
+    setRedoStack((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
 
   const syncSelectedPointVisibility = (indices: number[]) => {
@@ -874,6 +937,21 @@ export default function App() {
     const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
     sceneRef.current.pointIndexLabels.children.forEach((child, index) => {
       child.visible = visibilityAttr.getX(index) >= 0.5;
+    });
+  };
+
+  const syncPointIndexLabelPositions = () => {
+    if (!sceneRef.current?.points || !sceneRef.current.pointIndexLabels) return;
+
+    const positionAttr = sceneRef.current.points.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const sizeAttr = sceneRef.current.points.geometry.getAttribute('size') as THREE.BufferAttribute;
+
+    sceneRef.current.pointIndexLabels.children.forEach((child: THREE.Object3D, index: number) => {
+      child.position.set(
+        positionAttr.getX(index),
+        positionAttr.getY(index) + Math.max(sizeAttr.getX(index) * 4, 4),
+        positionAttr.getZ(index)
+      );
     });
   };
 
@@ -1077,8 +1155,12 @@ export default function App() {
       const exportedPoints = [...points];
       if (sceneRef.current?.points) {
         const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility');
+        const positionAttr = sceneRef.current.points.geometry.getAttribute('position');
         for (let i = 0; i < exportedPoints.length; i++) {
           exportedPoints[i].visibility = visibilityAttr.getX(i);
+          exportedPoints[i].x = positionAttr.getX(i);
+          exportedPoints[i].y = positionAttr.getY(i);
+          exportedPoints[i].z = positionAttr.getZ(i);
         }
       }
 
@@ -1156,6 +1238,7 @@ export default function App() {
       <main className="flex-1 flex overflow-hidden">
         <ControlSidebar
           brushSettings={brushSettings}
+          brushDepthPercent={brushDepthPercent}
           brushSoftnessPercent={brushSoftnessPercent}
           brushStrengthPercent={brushStrengthPercent}
           depthImg={depthImg}
@@ -1178,6 +1261,7 @@ export default function App() {
           selectedPointCount={selectedPointCount}
           selectionModeEnabled={selectionModeEnabled}
           setBrushSettings={setBrushSettings}
+          setBrushDepthPercent={setBrushDepthPercent}
           setBrushSoftnessPercent={setBrushSoftnessPercent}
           setBrushStrengthPercent={setBrushStrengthPercent}
           setParams={setParams}

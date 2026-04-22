@@ -1,4 +1,4 @@
-export type BrushMode = 'hide' | 'reveal' | 'select';
+export type BrushMode = 'hide' | 'reveal' | 'select' | 'push' | 'pull';
 
 export type ScreenPointHit = {
   index: number;
@@ -59,13 +59,11 @@ export const mergeSelectionIndices = (
   return Array.from(mergedIndices).sort((left, right) => left - right);
 };
 
-export const shouldApplyBrushEffect = (
+export const getBrushInfluence = (
   normalizedDistance: number,
-  softness: number,
-  strength: number,
-  noiseValue: number
-): boolean => {
-  if (normalizedDistance >= 1) return false;
+  softness: number
+): number => {
+  if (normalizedDistance >= 1) return 0;
 
   const featherStart = 1 - softness;
   let coverage = normalizedDistance <= featherStart ? 1 : 0;
@@ -75,5 +73,15 @@ export const shouldApplyBrushEffect = (
     coverage = 1 - Math.min(Math.max(featherProgress, 0), 1);
   }
 
+  return coverage;
+};
+
+export const shouldApplyBrushEffect = (
+  normalizedDistance: number,
+  softness: number,
+  strength: number,
+  noiseValue: number
+): boolean => {
+  const coverage = getBrushInfluence(normalizedDistance, softness);
   return coverage * strength >= noiseValue;
 };

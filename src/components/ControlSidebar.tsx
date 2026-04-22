@@ -19,6 +19,7 @@ type BrushSettings = {
 
 type ControlSidebarProps = {
   brushSettings: BrushSettings;
+  brushDepthPercent: number;
   brushSoftnessPercent: number;
   brushStrengthPercent: number;
   depthImg: string | null;
@@ -41,6 +42,7 @@ type ControlSidebarProps = {
   selectedPointCount: number;
   selectionModeEnabled: boolean;
   setBrushSettings: React.Dispatch<React.SetStateAction<BrushSettings>>;
+  setBrushDepthPercent: (percent: number) => void;
   setBrushSoftnessPercent: (percent: number) => void;
   setBrushStrengthPercent: (percent: number) => void;
   setParams: React.Dispatch<React.SetStateAction<SamplingParams>>;
@@ -57,6 +59,7 @@ type ControlSidebarProps = {
 
 export function ControlSidebar({
   brushSettings,
+  brushDepthPercent,
   brushSoftnessPercent,
   brushStrengthPercent,
   depthImg,
@@ -79,6 +82,7 @@ export function ControlSidebar({
   selectedPointCount,
   selectionModeEnabled,
   setBrushSettings,
+  setBrushDepthPercent,
   setBrushSoftnessPercent,
   setBrushStrengthPercent,
   setParams,
@@ -374,7 +378,7 @@ export function ControlSidebar({
 
         {brushSettings.enabled && (
           <div className="space-y-4 p-3 bg-tech-header/50 border border-tech-border rounded animate-in fade-in slide-in-from-top-2 duration-300">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => setBrushSettings({ ...brushSettings, mode: 'hide' })}
                 className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'hide' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
@@ -388,8 +392,20 @@ export function ControlSidebar({
                 <Paintbrush className="w-3 h-3" /> Reveal
               </button>
               <button
+                onClick={() => setBrushSettings({ ...brushSettings, mode: 'push' })}
+                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'push' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
+              >
+                Depth Out
+              </button>
+              <button
+                onClick={() => setBrushSettings({ ...brushSettings, mode: 'pull' })}
+                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'pull' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
+              >
+                Depth In
+              </button>
+              <button
                 onClick={() => setBrushSettings({ ...brushSettings, mode: 'select' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
+                className={`col-span-2 flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
               >
                 <Layers className="w-3 h-3" /> Select
               </button>
@@ -433,6 +449,16 @@ export function ControlSidebar({
             </div>
 
             <div>
+              <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Depth Amount</span><span>{brushDepthPercent}% SCALE</span></div>
+              <input
+                type="range" min="1" max="100" step="1"
+                value={brushDepthPercent}
+                onChange={(e) => setBrushDepthPercent(parseInt(e.target.value))}
+                className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+
+            <div>
               <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Softness</span><span>{brushSoftnessPercent}%</span></div>
               <input
                 type="range" min="0" max="100" step="1"
@@ -442,7 +468,7 @@ export function ControlSidebar({
               />
             </div>
 
-            <div className="text-[8px] opacity-40 font-mono italic">Brush can hide, reveal, or add to selection. Strength changes how many points are affected, not opacity. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
+            <div className="text-[8px] opacity-40 font-mono italic">Brush can hide, reveal, move depth out or in, or add to selection. Depth Amount is relative to the current depth scale. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
           </div>
         )}
       </section>
