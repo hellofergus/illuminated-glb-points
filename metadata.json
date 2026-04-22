@@ -1,0 +1,6 @@
+{
+  "name": "Remix: Illuminated Points - Brush integration",
+  "description": "Convert 2D illustrations into stylized 3D point clouds with depth-based extrusion and GLB export. BRUSH",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
