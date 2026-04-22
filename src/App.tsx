@@ -27,6 +27,21 @@ import {
 } from 'lucide-react';
 import { processImages, exportToGLB, getAutoDepthMap, SamplingParams, PointData } from './processing/pointSampler';
 
+type SavedSelection = {
+  id: string;
+  name: string;
+  indices: number[];
+};
+
+type SelectionDragState = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  append: boolean;
+  remove: boolean;
+};
+
 export default function App() {
   const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
@@ -39,6 +54,10 @@ export default function App() {
   const [isAutoDepthLoading, setIsAutoDepthLoading] = useState(false);
   const [status, setStatus] = useState<string>('Ready');
   const [points, setPoints] = useState<PointData[]>([]);
+  const [selectionModeEnabled, setSelectionModeEnabled] = useState(false);
+  const [selectedPointIndices, setSelectedPointIndices] = useState<number[]>([]);
+  const [selectionDragState, setSelectionDragState] = useState<SelectionDragState | null>(null);
+  const [savedSelections, setSavedSelections] = useState<SavedSelection[]>([]);
   const [showPointIndices, setShowPointIndices] = useState(false);
   const [stats, setStats] = useState({
     width: 0,
@@ -65,10 +84,16 @@ export default function App() {
   const brushSettingsRef = useRef(brushSettings);
   const isBrushingRef = useRef(isBrushing);
   const isAltNavigationRef = useRef(isAltNavigationActive);
+  const selectionModeEnabledRef = useRef(selectionModeEnabled);
+  const selectedPointIndicesRef = useRef(selectedPointIndices);
+  const selectionDragStateRef = useRef<SelectionDragState | null>(selectionDragState);
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
   useEffect(() => { brushSettingsRef.current = brushSettings; }, [brushSettings]);
   useEffect(() => { isBrushingRef.current = isBrushing; }, [isBrushing]);
   useEffect(() => { isAltNavigationRef.current = isAltNavigationActive; }, [isAltNavigationActive]);
+  useEffect(() => { selectionModeEnabledRef.current = selectionModeEnabled; }, [selectionModeEnabled]);
+  useEffect(() => { selectedPointIndicesRef.current = selectedPointIndices; }, [selectedPointIndices]);
+  useEffect(() => { selectionDragStateRef.current = selectionDragState; }, [selectionDragState]);
 
   const adjustBrushSize = (delta: number) => {
     setBrushSettings((prev) => ({
@@ -106,6 +131,14 @@ export default function App() {
     );
   };
 
+  const createSavedSelectionId = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+
+    return `selection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  };
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.altKey) {
@@ -138,13 +171,13 @@ export default function App() {
   // Lock rotation when brush is enabled
   useEffect(() => {
     if (sceneRef.current?.controls) {
-      sceneRef.current.controls.enableRotate = !brushSettings.enabled || isAltNavigationActive;
+      sceneRef.current.controls.enableRotate = (!brushSettings.enabled && !selectionModeEnabled) || isAltNavigationActive;
     }
     if (brushIndicatorRef.current) {
-      brushIndicatorRef.current.visible = brushSettings.enabled && !isAltNavigationActive;
+      brushIndicatorRef.current.visible = brushSettings.enabled && !selectionModeEnabled && !isAltNavigationActive;
       brushIndicatorRef.current.scale.set(brushSettings.size, brushSettings.size, 1);
     }
-  }, [brushSettings.enabled, brushSettings.size, isAltNavigationActive]);
+  }, [brushSettings.enabled, brushSettings.size, isAltNavigationActive, selectionModeEnabled]);
 
   // Parameters
   const [params, setParams] = useState<SamplingParams>({
@@ -178,6 +211,14 @@ export default function App() {
   } | null>(null);
   const brushStrengthPercent = Math.round(brushSettings.strength * 100);
   const brushSoftnessPercent = Math.round(brushSettings.softness * 100);
+  const sortedSelectedPointIndices = [...selectedPointIndices].sort((left, right) => left - right);
+  const selectedPointCount = sortedSelectedPointIndices.length;
+  const selectionRect = selectionDragState ? {
+    left: Math.min(selectionDragState.startX, selectionDragState.currentX),
+    top: Math.min(selectionDragState.startY, selectionDragState.currentY),
+    width: Math.abs(selectionDragState.currentX - selectionDragState.startX),
+    height: Math.abs(selectionDragState.currentY - selectionDragState.startY)
+  } : null;
 
   // Initialize Three.js
   useEffect(() => {
@@ -208,22 +249,66 @@ export default function App() {
     scene.add(brushIndicator);
     brushIndicatorRef.current = brushIndicator;
 
-    const raycaster = new THREE.Raycaster();
-    raycaster.params.Points = { threshold: 5 }; // Increased threshold for easier selection
     const mouse = new THREE.Vector2();
+    const projectedPoint = new THREE.Vector3();
 
     sceneRef.current = { scene, camera, renderer, controls, points: null, pointIndexLabels: null };
 
+    const getRendererRect = () => renderer.domElement.getBoundingClientRect();
+
+    const getCanvasPointer = (clientX: number, clientY: number) => {
+      const rect = getRendererRect();
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+        width: rect.width,
+        height: rect.height
+      };
+    };
+
+    const getVisibleProjectedPointIndices = () => {
+      if (!sceneRef.current?.points) return [] as Array<{ index: number; x: number; y: number }>;
+
+      const rect = getRendererRect();
+      const pointCloud = sceneRef.current.points;
+      const geometry = pointCloud.geometry;
+      const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+      const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
+      const localPoint = new THREE.Vector3();
+      const worldPoint = new THREE.Vector3();
+      const hits: Array<{ index: number; x: number; y: number }> = [];
+
+      sceneRef.current.camera.updateMatrixWorld();
+      pointCloud.updateMatrixWorld(true);
+
+      for (let index = 0; index < positionAttr.count; index++) {
+        if (visibilityAttr.getX(index) < 0.5) continue;
+
+        localPoint.fromBufferAttribute(positionAttr, index);
+        worldPoint.copy(localPoint).applyMatrix4(pointCloud.matrixWorld);
+        projectedPoint.copy(worldPoint).project(sceneRef.current.camera);
+
+        if (projectedPoint.z < -1 || projectedPoint.z > 1) continue;
+
+        hits.push({
+          index,
+          x: ((projectedPoint.x + 1) / 2) * rect.width,
+          y: ((1 - projectedPoint.y) / 2) * rect.height
+        });
+      }
+
+      return hits;
+    };
+
     // Brush Application Function
     const applyBrush = (clientX: number, clientY: number, forcePaint: boolean = false) => {
-      if (!sceneRef.current || !sceneRef.current.points || !canvasRef.current) return;
+      if (!sceneRef.current || !sceneRef.current.points) return;
       
-      const rect = canvasRef.current.getBoundingClientRect();
-      mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-      
-      raycaster.setFromCamera(mouse, sceneRef.current.camera);
-      const intersects = raycaster.intersectObject(sceneRef.current.points);
+      const pointer = getCanvasPointer(clientX, clientY);
+      if (!pointer) return;
+
+      mouse.x = (pointer.x / pointer.width) * 2 - 1;
+      mouse.y = -(pointer.y / pointer.height) * 2 + 1;
       
       const settings = brushSettingsRef.current;
       const indicator = brushIndicatorRef.current;
@@ -232,9 +317,24 @@ export default function App() {
         if (settings.enabled && !isAltNavigationRef.current) {
           indicator.visible = true;
           indicator.scale.set(settings.size, settings.size, 1);
-          
-          if (intersects.length > 0) {
-            indicator.position.copy(intersects[0].point);
+          const selectionHits = getVisibleProjectedPointIndices();
+          let nearestHit: { index: number; x: number; y: number } | null = null;
+          let nearestDistance = Infinity;
+
+          selectionHits.forEach((hit) => {
+            const distance = Math.hypot(hit.x - pointer.x, hit.y - pointer.y);
+            if (distance < nearestDistance) {
+              nearestDistance = distance;
+              nearestHit = hit;
+            }
+          });
+
+          if (nearestHit && sceneRef.current?.points) {
+            const pointCloud = sceneRef.current.points;
+            const positionAttr = pointCloud.geometry.getAttribute('position') as THREE.BufferAttribute;
+            const localPoint = new THREE.Vector3().fromBufferAttribute(positionAttr, nearestHit.index);
+            const worldPoint = localPoint.applyMatrix4(pointCloud.matrixWorld);
+            indicator.position.copy(worldPoint);
             indicator.lookAt(sceneRef.current.camera.position);
           } else {
             const dir = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(sceneRef.current.camera).sub(sceneRef.current.camera.position).normalize();
@@ -247,13 +347,22 @@ export default function App() {
       }
 
       // ONLY process point physics if we are actually clicking (or forced)
-      if (intersects.length > 0 && settings.enabled && !isAltNavigationRef.current && (isBrushingRef.current || forcePaint)) {
+      const selectionHits = getVisibleProjectedPointIndices();
+      const nearestBrushHit = selectionHits.reduce<{ index: number; x: number; y: number } | null>((nearest, hit) => {
+        const currentDistance = Math.hypot(hit.x - pointer.x, hit.y - pointer.y);
+        if (!nearest) return currentDistance <= 18 ? hit : null;
+
+        const nearestDistance = Math.hypot(nearest.x - pointer.x, nearest.y - pointer.y);
+        return currentDistance < nearestDistance ? hit : nearest;
+      }, null);
+
+      if (nearestBrushHit && settings.enabled && !isAltNavigationRef.current && (isBrushingRef.current || forcePaint)) {
         const pointCloud = sceneRef.current.points;
         const geometry = pointCloud.geometry;
         const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
         const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-        
-        const center = intersects[0].point;
+
+        const center = new THREE.Vector3().fromBufferAttribute(positionAttr, nearestBrushHit.index).applyMatrix4(pointCloud.matrixWorld);
         const pos = new THREE.Vector3();
         const worldPos = new THREE.Vector3();
         
@@ -287,8 +396,84 @@ export default function App() {
       }
     };
 
+    const updateSelectedPoints = (indices: number[], append: boolean, remove: boolean) => {
+      setSelectedPointIndices((prev) => {
+        const next = remove ? new Set<number>(prev) : new Set<number>(append ? prev : []);
+
+        indices.forEach((index) => {
+          if (remove) {
+            next.delete(index);
+          } else {
+            next.add(index);
+          }
+        });
+
+        return Array.from(next).sort((left, right) => left - right);
+      });
+    };
+
+    const selectPointAt = (clientX: number, clientY: number, append: boolean, remove: boolean) => {
+      const pointer = getCanvasPointer(clientX, clientY);
+      if (!pointer) return;
+
+      const nearestHit = getVisibleProjectedPointIndices().reduce<{ index: number; x: number; y: number } | null>((nearest, hit) => {
+        const currentDistance = Math.hypot(hit.x - pointer.x, hit.y - pointer.y);
+        if (currentDistance > 16) return nearest;
+        if (!nearest) return hit;
+
+        const nearestDistance = Math.hypot(nearest.x - pointer.x, nearest.y - pointer.y);
+        return currentDistance < nearestDistance ? hit : nearest;
+      }, null);
+
+      if (nearestHit) {
+        updateSelectedPoints([nearestHit.index], append, remove);
+        return;
+      }
+
+      if (!append && !remove) {
+        setSelectedPointIndices([]);
+      }
+    };
+
+    const selectPointsInRectangle = (dragState: SelectionDragState) => {
+      const left = Math.min(dragState.startX, dragState.currentX);
+      const right = Math.max(dragState.startX, dragState.currentX);
+      const top = Math.min(dragState.startY, dragState.currentY);
+      const bottom = Math.max(dragState.startY, dragState.currentY);
+
+      const indices = getVisibleProjectedPointIndices()
+        .filter((hit) => hit.x >= left && hit.x <= right && hit.y >= top && hit.y <= bottom)
+        .map((hit) => hit.index);
+
+      if (indices.length > 0) {
+        updateSelectedPoints(indices, dragState.append, dragState.remove);
+        return;
+      }
+
+      if (!dragState.append && !dragState.remove) {
+        setSelectedPointIndices([]);
+      }
+    };
+
     const handleMouseDown = (e: MouseEvent) => {
+      if (selectionModeEnabledRef.current && e.button === 0 && !e.altKey) {
+        e.preventDefault();
+        const pointer = getCanvasPointer(e.clientX, e.clientY);
+        if (pointer) {
+          setSelectionDragState({
+            startX: pointer.x,
+            startY: pointer.y,
+            currentX: pointer.x,
+            currentY: pointer.y,
+            append: e.shiftKey,
+            remove: e.ctrlKey || e.metaKey
+          });
+        }
+        return;
+      }
+
       if (brushSettingsRef.current.enabled && e.button === 0 && !e.altKey) {
+        e.preventDefault();
         pushToHistory();
         setIsBrushing(true);
         applyBrush(e.clientX, e.clientY, true);
@@ -300,12 +485,41 @@ export default function App() {
         setIsBrushing(false);
       }
 
-      if (brushSettingsRef.current.enabled) {
+      if (selectionDragStateRef.current) {
+        const pointer = getCanvasPointer(e.clientX, e.clientY);
+        if (pointer) {
+          setSelectionDragState((prev) => prev ? {
+            ...prev,
+            currentX: pointer.x,
+            currentY: pointer.y
+          } : prev);
+        }
+        return;
+      }
+
+      if (brushSettingsRef.current.enabled && !selectionModeEnabledRef.current) {
         applyBrush(e.clientX, e.clientY);
       }
     };
 
     const handleMouseUp = () => {
+      if (selectionDragStateRef.current) {
+        const dragState = selectionDragStateRef.current;
+        const dragDistance = Math.hypot(
+          dragState.currentX - dragState.startX,
+          dragState.currentY - dragState.startY
+        );
+
+        if (dragDistance < 4) {
+          const rect = getRendererRect();
+          selectPointAt(rect.left + dragState.currentX, rect.top + dragState.currentY, dragState.append, dragState.remove);
+        } else {
+          selectPointsInRectangle(dragState);
+        }
+
+        setSelectionDragState(null);
+      }
+
       setIsBrushing(false);
     };
 
@@ -425,6 +639,7 @@ export default function App() {
         });
 
         if (importedPoints.length > 0) {
+          clearSelectionState();
           setPoints(importedPoints);
           setStats({
             width: 0,
@@ -483,6 +698,100 @@ export default function App() {
     setRedoStack(prev => prev.slice(0, -1));
   };
 
+  const syncSelectedPointVisibility = (indices: number[]) => {
+    if (!sceneRef.current?.points) return;
+
+    const selectedAttr = sceneRef.current.points.geometry.getAttribute('selected') as THREE.BufferAttribute | undefined;
+    if (!selectedAttr) return;
+
+    const selectedArray = selectedAttr.array as Float32Array;
+    selectedArray.fill(0);
+
+    indices.forEach((index) => {
+      if (index >= 0 && index < selectedAttr.count) {
+        selectedAttr.setX(index, 1);
+      }
+    });
+
+    selectedAttr.needsUpdate = true;
+  };
+
+  const clearSelectionState = () => {
+    setSelectedPointIndices([]);
+    setSavedSelections([]);
+  };
+
+  const restoreSavedSelection = (indices: number[]) => {
+    const validIndices = indices
+      .filter((index) => index >= 0 && index < points.length)
+      .sort((left, right) => left - right);
+
+    setSelectedPointIndices(validIndices);
+    if (validIndices.length > 0) {
+      setSelectionModeEnabled(true);
+      setBrushSettings((prev) => ({ ...prev, enabled: false }));
+      setStatus(`Selection restored (${validIndices.length} points)`);
+    }
+  };
+
+  const saveCurrentSelection = () => {
+    if (selectedPointIndicesRef.current.length === 0) {
+      setStatus('Notice: No points selected');
+      return;
+    }
+
+    const nextSelection: SavedSelection = {
+      id: createSavedSelectionId(),
+      name: `Selection ${savedSelections.length + 1}`,
+      indices: [...selectedPointIndicesRef.current].sort((left, right) => left - right)
+    };
+
+    setSavedSelections((prev) => [...prev, nextSelection]);
+    setStatus(`Saved ${nextSelection.name}`);
+  };
+
+  const updateSavedSelectionName = (selectionId: string, name: string) => {
+    setSavedSelections((prev) => prev.map((selection) => (
+      selection.id === selectionId ? { ...selection, name } : selection
+    )));
+  };
+
+  const deleteSavedSelection = (selectionId: string) => {
+    setSavedSelections((prev) => prev.filter((selection) => selection.id !== selectionId));
+  };
+
+  const applyVisibilityToSelectedPoints = (visibility: 0 | 1, statusMessage: string) => {
+    if (!sceneRef.current?.points || selectedPointIndicesRef.current.length === 0) {
+      setStatus('Notice: No points selected');
+      return;
+    }
+
+    pushToHistory();
+
+    const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
+    selectedPointIndicesRef.current.forEach((index) => {
+      if (index >= 0 && index < visibilityAttr.count) {
+        visibilityAttr.setX(index, visibility);
+      }
+    });
+
+    visibilityAttr.needsUpdate = true;
+    syncPointIndexLabelVisibility();
+    setStatus(statusMessage);
+  };
+
+  const hideSelectedPoints = () => {
+    applyVisibilityToSelectedPoints(0, 'Selected points hidden');
+  };
+
+  const restoreSelectedPoints = () => {
+    applyVisibilityToSelectedPoints(1, 'Selected points restored');
+  };
+
+  useEffect(() => {
+    syncSelectedPointVisibility(selectedPointIndices);
+  }, [selectedPointIndices, points]);
+
   useEffect(() => {
     const handleShortcutKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
@@ -494,6 +803,12 @@ export default function App() {
         } else {
           handleUndo();
         }
+        return;
+      }
+
+      if (selectionModeEnabledRef.current && event.key === 'Backspace') {
+        event.preventDefault();
+        hideSelectedPoints();
         return;
       }
 
@@ -635,6 +950,7 @@ export default function App() {
     const positions = new Float32Array(targetPoints.length * 3);
     const colors = new Float32Array(targetPoints.length * 3);
     const sizes = new Float32Array(targetPoints.length);
+    const selected = new Float32Array(targetPoints.length);
     const visibilities = new Float32Array(targetPoints.length);
 
     targetPoints.forEach((p, i) => {
@@ -651,6 +967,7 @@ export default function App() {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute('selected', new THREE.BufferAttribute(selected, 1));
     geometry.setAttribute('visibility', new THREE.BufferAttribute(visibilities, 1));
 
     const material = new THREE.ShaderMaterial({
@@ -660,19 +977,23 @@ export default function App() {
       vertexShader: `
         uniform float uPointSizeScale;
         attribute float size;
+        attribute float selected;
         attribute float visibility;
         varying vec3 vColor;
+        varying float vSelected;
         varying float vVisibility;
         void main() {
           vColor = color;
+          vSelected = selected;
           vVisibility = visibility;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = size * uPointSizeScale * (500.0 / -mvPosition.z);
+          gl_PointSize = size * uPointSizeScale * mix(1.0, 1.75, selected) * (500.0 / -mvPosition.z);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
       fragmentShader: `
         varying vec3 vColor;
+        varying float vSelected;
         varying float vVisibility;
         void main() {
           // Hard threshold for boolean visibility
@@ -681,7 +1002,9 @@ export default function App() {
           if (length(gl_PointCoord - vec2(0.5, 0.5)) > 0.5) discard;
           
           // Force full opacity, no partial transparency
-          gl_FragColor = vec4(vColor, 1.0);
+          vec3 selectedColor = vec3(1.0, 0.55, 0.12);
+          vec3 finalColor = mix(vColor, selectedColor, vSelected);
+          gl_FragColor = vec4(finalColor, 1.0);
         }
       `,
       transparent: false,
@@ -691,6 +1014,7 @@ export default function App() {
     const pointsMesh = new THREE.Points(geometry, material);
     sceneRef.current.scene.add(pointsMesh);
     sceneRef.current.points = pointsMesh;
+    syncSelectedPointVisibility(selectedPointIndicesRef.current);
     rebuildPointIndexLabels(targetPoints);
     
     // Fit camera to object
@@ -729,6 +1053,7 @@ export default function App() {
         params
       );
 
+      clearSelectionState();
       setPoints(result);
       setStats({
         width: sourceImgRef.current.naturalWidth,
@@ -810,6 +1135,8 @@ export default function App() {
               setSourceImg(null);
               setDepthImg(null);
               setPoints([]);
+              setSelectionModeEnabled(false);
+              clearSelectionState();
               setStatus('Ready');
               if (sceneRef.current?.points) {
                 sceneRef.current.scene.remove(sceneRef.current.points);
@@ -987,12 +1314,118 @@ export default function App() {
             </div>
           </section>
 
-          {/* Transform Parameters */}
           <section className="space-y-4">
             <div className="mono-label text-tech-accent uppercase flex justify-between items-center">
-              <span>03 // Brush Tool</span>
+              <span>03 // Arrow Selection</span>
+              <button
+                onClick={() => {
+                  const nextEnabled = !selectionModeEnabled;
+                  setSelectionModeEnabled(nextEnabled);
+                  if (nextEnabled) {
+                    setBrushSettings((prev) => ({ ...prev, enabled: false }));
+                  }
+                }}
+                className={`text-[9px] px-2 py-0.5 border rounded transition-all ${selectionModeEnabled ? 'bg-tech-accent text-black border-tech-accent' : 'border-tech-subtle-border opacity-50'}`}
+              >
+                {selectionModeEnabled ? '[ ACTIVE ]' : '[ INACTIVE ]'}
+              </button>
+            </div>
+
+            <div className="space-y-3 p-3 bg-tech-header/50 border border-tech-border rounded">
+              <div className="flex items-center justify-between border-b border-tech-border/30 pb-2">
+                <div>
+                  <div className="mono-value text-[10px] text-tech-accent font-bold">{selectedPointCount} SELECTED</div>
+                  <div className="text-[8px] opacity-40 font-mono uppercase">Click selects, drag draws box, Shift adds, Ctrl removes</div>
+                </div>
+                <button
+                  onClick={() => setSelectedPointIndices([])}
+                  disabled={selectedPointCount === 0}
+                  className="px-2 py-1 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={hideSelectedPoints}
+                  disabled={selectedPointCount === 0}
+                  className="py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                >
+                  Hide Selected
+                </button>
+                <button
+                  onClick={restoreSelectedPoints}
+                  disabled={selectedPointCount === 0}
+                  className="py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                >
+                  Bring Back
+                </button>
+                <button
+                  onClick={saveCurrentSelection}
+                  disabled={selectedPointCount === 0}
+                  className="col-span-2 py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                >
+                  Save Current Selection
+                </button>
+              </div>
+
+              <div className="space-y-2 border-t border-tech-border/30 pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Stored Selections</span>
+                  <span className="mono-value text-[9px] text-tech-accent">{savedSelections.length}</span>
+                </div>
+
+                {savedSelections.length === 0 ? (
+                  <div className="text-[8px] opacity-30 font-mono uppercase">No saved selections yet</div>
+                ) : (
+                  <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-hide pr-1">
+                    {savedSelections.map((selection) => (
+                      <div
+                        key={selection.id}
+                        onDoubleClick={() => restoreSavedSelection(selection.indices)}
+                        className="space-y-2 border border-tech-border/60 rounded px-2 py-2 bg-tech-bg/30"
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={selection.name}
+                            onChange={(e) => updateSavedSelectionName(selection.id, e.target.value)}
+                            className="flex-1 bg-transparent border border-tech-border/50 rounded px-2 py-1 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
+                          />
+                          <button
+                            onClick={() => deleteSavedSelection(selection.id)}
+                            className="px-2 py-1 border border-tech-border rounded text-[8px] uppercase font-mono hover:border-red-500 hover:text-red-400 transition-all"
+                          >
+                            X
+                          </button>
+                        </div>
+                        <div className="flex items-center justify-between text-[8px] font-mono uppercase opacity-50">
+                          <span>{selection.indices.length} points</span>
+                          <span>Double click to restore</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="text-[8px] opacity-40 font-mono italic">Arrow tool uses click or drag-box selection. Backspace hides the current selection without deleting any points.</div>
+            </div>
+          </section>
+
+          {/* Brush Parameters */}
+          <section className="space-y-4">
+            <div className="mono-label text-tech-accent uppercase flex justify-between items-center">
+              <span>04 // Brush Tool</span>
               <button 
-                onClick={() => setBrushSettings({...brushSettings, enabled: !brushSettings.enabled})}
+                onClick={() => {
+                  const nextEnabled = !brushSettings.enabled;
+                  setBrushSettings({...brushSettings, enabled: nextEnabled});
+                  if (nextEnabled) {
+                    setSelectionModeEnabled(false);
+                  }
+                }}
                 className={`text-[9px] px-2 py-0.5 border rounded transition-all ${brushSettings.enabled ? 'bg-tech-accent text-black border-tech-accent' : 'border-tech-subtle-border opacity-50'}`}
               >
                 {brushSettings.enabled ? '[ ACTIVE ]' : '[ INACTIVE ]'}
@@ -1070,7 +1503,7 @@ export default function App() {
 
           {/* Coordinate Transform */}
           <section className="space-y-4">
-            <div className="mono-label text-tech-accent">04 // Coordinate Transform</div>
+            <div className="mono-label text-tech-accent">05 // Coordinate Transform</div>
             <div className="space-y-4">
               <div>
                 <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Depth Scale</span><span>{params.depthScale.toFixed(1)}</span></div>
@@ -1094,7 +1527,7 @@ export default function App() {
           </section>
 
           <section className="space-y-4">
-            <div className="mono-label text-tech-accent uppercase">05 // Debug View</div>
+            <div className="mono-label text-tech-accent uppercase">06 // Debug View</div>
             <div className="flex items-center justify-between py-1 border-b border-tech-border/30">
               <span className="mono-value opacity-50 font-mono">Point Index Labels</span>
               <button 
@@ -1129,10 +1562,23 @@ export default function App() {
                 <span className="mono-value text-[9px] opacity-60">RESOLUTION: {stats.width}x{stats.height}</span>
                 <span className="mono-value text-[9px] text-tech-accent font-bold">NODES: {stats.pointCount.toLocaleString()}</span>
               </div>
+              <div className="mono-value text-[9px] opacity-60">SELECTED: {selectedPointCount.toLocaleString()}</div>
             </div>
 
             {/* Three.js Canvas */}
-            <div ref={canvasRef} className="flex-1 w-full h-full cursor-move bg-[radial-gradient(#1a1a1a_1.2px,transparent_1.2px)] [background-size:24px_24px]" />
+            <div ref={canvasRef} className={`flex-1 w-full h-full ${selectionModeEnabled ? 'cursor-default' : brushSettings.enabled ? 'cursor-none' : 'cursor-move'} bg-[radial-gradient(#1a1a1a_1.2px,transparent_1.2px)] [background-size:24px_24px]`} />
+
+            {selectionRect && (
+              <div
+                className="absolute border border-tech-accent bg-tech-accent/10 pointer-events-none"
+                style={{
+                  left: `${selectionRect.left}px`,
+                  top: `${selectionRect.top}px`,
+                  width: `${selectionRect.width}px`,
+                  height: `${selectionRect.height}px`
+                }}
+              />
+            )}
             
             {/* Legend / Status Inlay */}
             <div className="absolute bottom-4 left-4 z-10 p-2 bg-tech-sidebar/90 border border-tech-border backdrop-blur-md pointer-events-none flex items-center gap-3">
