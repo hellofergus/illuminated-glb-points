@@ -18,7 +18,8 @@ export interface PointData {
 }
 
 export interface SamplingParams {
-  samplingMode: 'grid' | 'blob' | 'stochastic';
+  samplingMode: 'grid' | 'blob' | 'stochastic' | 'pixel-exact' | 'dot-detect';
+  depthColorSpace: 'raw' | 'srgb-linear';
   brightnessThreshold: number;
   samplingStep: number;
   stochasticDensity: number;
@@ -40,6 +41,17 @@ export async function processImages(
   depthImage: HTMLImageElement | null,
   params: SamplingParams
 ): Promise<PointData[]> {
+  type PixelExactCandidate = {
+    sourceX: number;
+    sourceY: number;
+    depth: number;
+    size: number;
+    r: number;
+    g: number;
+    b: number;
+    weight: number;
+  };
+
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('Could not get canvas context');
@@ -69,6 +81,21 @@ export async function processImages(
   const points: PointData[] = [];
   const step = Math.max(1, Math.round(params.samplingStep));
   const density = Math.max(1, Math.round(params.pointDensityFactor || 1));
+
+  const srgbToLinear = (value: number) => {
+    if (value <= 0.04045) {
+      return value / 12.92;
+    }
+
+    return Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+
+  const normalizeDepthValue = (value: number) => {
+    const normalizedValue = Math.max(0, Math.min(1, value));
+    return params.depthColorSpace === 'srgb-linear'
+      ? srgbToLinear(normalizedValue)
+      : normalizedValue;
+  };
 
   // Helper for bi-linear color/depth sampling
   const sampleSource = (x: number, y: number): {r: number, g: number, b: number, a: number} => {
@@ -104,10 +131,10 @@ export async function processImages(
     const fx = x - x1;
     const fy = y - y1;
 
-    const v11 = depthData[(y1 * width + x1) * 4] / 255;
-    const v21 = depthData[(y1 * width + x2) * 4] / 255;
-    const v12 = depthData[(y2 * width + x1) * 4] / 255;
-    const v22 = depthData[(y2 * width + x2) * 4] / 255;
+    const v11 = normalizeDepthValue(depthData[(y1 * width + x1) * 4] / 255);
+    const v21 = normalizeDepthValue(depthData[(y1 * width + x2) * 4] / 255);
+    const v12 = normalizeDepthValue(depthData[(y2 * width + x1) * 4] / 255);
+    const v22 = normalizeDepthValue(depthData[(y2 * width + x2) * 4] / 255);
 
     return (v11 * (1 - fx) + v21 * fx) * (1 - fy) + (v12 * (1 - fx) + v22 * fx) * fy;
   };
@@ -116,7 +143,369 @@ export async function processImages(
     return (0.299 * sourceData[idx] + 0.587 * sourceData[idx + 1] + 0.114 * sourceData[idx + 2]) / 255;
   };
 
-  if (params.samplingMode === 'stochastic') {
+  const getWeightedLuminanceAt = (x: number, y: number) => {
+    const idx = (y * width + x) * 4;
+    const alpha = sourceData[idx + 3] / 255;
+    return getLuminosity(idx) * alpha;
+  };
+
+  const isRecoverablePeak = (x: number, y: number) => {
+    const centerLuminance = getWeightedLuminanceAt(x, y);
+    const softThreshold = params.brightnessThreshold * 0.55;
+    if (centerLuminance < softThreshold) return false;
+
+    let maxNeighborLuminance = 0;
+    let minNeighborLuminance = centerLuminance;
+
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        if (offsetX === 0 && offsetY === 0) continue;
+
+        const nextX = x + offsetX;
+        const nextY = y + offsetY;
+        if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+
+        const neighborLuminance = getWeightedLuminanceAt(nextX, nextY);
+        maxNeighborLuminance = Math.max(maxNeighborLuminance, neighborLuminance);
+        minNeighborLuminance = Math.min(minNeighborLuminance, neighborLuminance);
+      }
+    }
+
+    return centerLuminance >= maxNeighborLuminance && (centerLuminance - minNeighborLuminance) >= 0.02;
+  };
+
+  const isStrictLitAt = (x: number, y: number) => {
+    return getWeightedLuminanceAt(x, y) >= params.brightnessThreshold;
+  };
+
+  const isLitAt = (x: number, y: number) => {
+    return isStrictLitAt(x, y) || isRecoverablePeak(x, y);
+  };
+
+  if (params.samplingMode === 'dot-detect') {
+    type DotPeak = { x: number; y: number; strength: number };
+
+    const peaks: DotPeak[] = [];
+    const localRadius = Math.max(1, Math.round(step));
+    const supportRadius = Math.max(2, localRadius + 1);
+    const componentRadius = Math.max(supportRadius + 1, Math.round(localRadius * 3));
+    const suppressionRadius = Math.max(componentRadius, Math.round(localRadius * 2.5));
+    const suppressionRadiusSquared = suppressionRadius * suppressionRadius;
+    const softThreshold = Math.max(0.01, params.brightnessThreshold * 0.45);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const centerValue = getWeightedLuminanceAt(x, y);
+        if (centerValue < softThreshold) continue;
+
+        let isLocalMaximum = true;
+        let localMin = centerValue;
+
+        for (let offsetY = -localRadius; offsetY <= localRadius && isLocalMaximum; offsetY++) {
+          for (let offsetX = -localRadius; offsetX <= localRadius; offsetX++) {
+            if (offsetX === 0 && offsetY === 0) continue;
+
+            const nextX = x + offsetX;
+            const nextY = y + offsetY;
+            if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+
+            const neighborValue = getWeightedLuminanceAt(nextX, nextY);
+            localMin = Math.min(localMin, neighborValue);
+
+            if (neighborValue > centerValue) {
+              isLocalMaximum = false;
+              break;
+            }
+          }
+        }
+
+        if (!isLocalMaximum) continue;
+        if ((centerValue - localMin) < 0.02) continue;
+
+        peaks.push({ x, y, strength: centerValue });
+      }
+    }
+
+    peaks.sort((left, right) => right.strength - left.strength);
+
+    const keptPeaks: DotPeak[] = [];
+    const consumedDotPixels = new Uint8Array(width * height);
+    const claimedDots: Array<{ x: number; y: number; radiusSquared: number }> = [];
+    for (const peak of peaks) {
+      let suppressed = false;
+
+      for (const keptPeak of keptPeaks) {
+        const dx = peak.x - keptPeak.x;
+        const dy = peak.y - keptPeak.y;
+        if ((dx * dx) + (dy * dy) <= suppressionRadiusSquared) {
+          suppressed = true;
+          break;
+        }
+      }
+
+      if (!suppressed) {
+        keptPeaks.push(peak);
+      }
+    }
+
+    for (const peak of keptPeaks) {
+      const peakIndex = peak.y * width + peak.x;
+      if (consumedDotPixels[peakIndex]) continue;
+
+      let overlapsClaimedDot = false;
+      for (const claimedDot of claimedDots) {
+        const dx = peak.x - claimedDot.x;
+        const dy = peak.y - claimedDot.y;
+        if ((dx * dx) + (dy * dy) <= claimedDot.radiusSquared) {
+          overlapsClaimedDot = true;
+          break;
+        }
+      }
+      if (overlapsClaimedDot) continue;
+
+      let depthSum = 0;
+      let supportPixelCount = 0;
+      let minX = peak.x;
+      let maxX = peak.x;
+      let minY = peak.y;
+      let maxY = peak.y;
+      const componentPixels: Array<{ x: number; y: number }> = [];
+      const componentVisited = new Uint8Array(width * height);
+      const componentQueue: Array<{ x: number; y: number }> = [{ x: peak.x, y: peak.y }];
+      componentVisited[peakIndex] = 1;
+
+      let queueIndex = 0;
+
+      while (queueIndex < componentQueue.length) {
+        const current = componentQueue[queueIndex++];
+        const currentIndex = current.y * width + current.x;
+        const dxFromPeak = current.x - peak.x;
+        const dyFromPeak = current.y - peak.y;
+        const distanceFromPeak = Math.sqrt((dxFromPeak * dxFromPeak) + (dyFromPeak * dyFromPeak));
+        if (distanceFromPeak > componentRadius) continue;
+
+        const luminance = getWeightedLuminanceAt(current.x, current.y);
+        if (luminance < softThreshold) continue;
+
+        let depthVal = getDepthAt(current.x, current.y);
+        if (params.invertDepth) depthVal = 1.0 - depthVal;
+
+  componentPixels.push(current);
+  depthSum += depthVal;
+        supportPixelCount += 1;
+  minX = Math.min(minX, current.x);
+  maxX = Math.max(maxX, current.x);
+  minY = Math.min(minY, current.y);
+  maxY = Math.max(maxY, current.y);
+        consumedDotPixels[currentIndex] = 1;
+
+        for (let offsetY = -1; offsetY <= 1; offsetY++) {
+          for (let offsetX = -1; offsetX <= 1; offsetX++) {
+            if (offsetX === 0 && offsetY === 0) continue;
+
+            const nextX = current.x + offsetX;
+            const nextY = current.y + offsetY;
+            if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+
+            const nextIndex = nextY * width + nextX;
+            if (componentVisited[nextIndex]) continue;
+
+            componentVisited[nextIndex] = 1;
+            componentQueue.push({ x: nextX, y: nextY });
+          }
+        }
+      }
+
+      if (componentPixels.length === 0) continue;
+
+      const sortedXs = componentPixels.map((pixel) => pixel.x).sort((left, right) => left - right);
+      const sortedYs = componentPixels.map((pixel) => pixel.y).sort((left, right) => left - right);
+      const middleIndex = Math.floor(sortedXs.length / 2);
+      const targetX = sortedXs[middleIndex];
+      const targetY = sortedYs[middleIndex];
+      const averageDepth = depthSum / componentPixels.length;
+      const blobWidth = Math.max(1, maxX - minX + 1);
+      const blobHeight = Math.max(1, maxY - minY + 1);
+      const effectiveCount = Math.min(componentPixels.length, params.maxBlobSize || 1000);
+      const baseSize = Math.max(
+        0.8,
+        Math.sqrt(effectiveCount) * 0.4 * Math.min(1.6, Math.max(blobWidth, blobHeight) / Math.max(1, supportRadius))
+      );
+      const claimRadius = Math.max(
+        componentRadius * 1.35,
+        Math.sqrt(Math.max(blobWidth * blobWidth + blobHeight * blobHeight, supportPixelCount)) + (componentRadius * 0.35)
+      );
+      const sampled = sampleSource(targetX, targetY);
+
+      claimedDots.push({
+        x: targetX,
+        y: targetY,
+        radiusSquared: claimRadius * claimRadius
+      });
+
+      points.push({
+        x: (targetX - width / 2) * params.xyScale,
+        y: -(targetY - height / 2) * params.xyScale,
+        z: averageDepth * params.depthScale,
+        r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
+        g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
+        b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
+        size: baseSize,
+        visibility: 1.0
+      });
+    }
+  } else if (params.samplingMode === 'pixel-exact') {
+    const visited = new Uint8Array(width * height);
+    const pixelExactCandidates: PixelExactCandidate[] = [];
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const seedIndex = y * width + x;
+        if (visited[seedIndex]) continue;
+
+        visited[seedIndex] = 1;
+        if (!isLitAt(x, y)) continue;
+
+        const queue: Array<{ x: number; y: number }> = [{ x, y }];
+        let head = 0;
+        let weightedX = 0;
+        let weightedY = 0;
+        let weightedDepth = 0;
+        let weightedSize = 0;
+        let weightedR = 0;
+        let weightedG = 0;
+        let weightedB = 0;
+        let totalWeight = 0;
+        let pixelCount = 0;
+
+        while (head < queue.length) {
+          const current = queue[head++];
+          const idx = (current.y * width + current.x) * 4;
+          const alpha = sourceData[idx + 3] / 255;
+          const luminosity = getLuminosity(idx);
+          const weight = Math.max(luminosity * alpha, 0.001);
+
+          const sampled = sampleSource(current.x, current.y);
+          let depthVal = getDepthAt(current.x, current.y);
+          if (params.invertDepth) depthVal = 1.0 - depthVal;
+
+          weightedX += current.x * weight;
+          weightedY += current.y * weight;
+          weightedDepth += depthVal * weight;
+          weightedSize += (0.8 + luminosity * 0.4) * weight;
+          weightedR += sampled.r * weight;
+          weightedG += sampled.g * weight;
+          weightedB += sampled.b * weight;
+          totalWeight += weight;
+          pixelCount += 1;
+
+          for (let offsetY = -2; offsetY <= 2; offsetY++) {
+            for (let offsetX = -2; offsetX <= 2; offsetX++) {
+              if (offsetX === 0 && offsetY === 0) continue;
+
+              const nextX = current.x + offsetX;
+              const nextY = current.y + offsetY;
+              if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+
+              const nextIndex = nextY * width + nextX;
+              if (visited[nextIndex]) continue;
+
+              visited[nextIndex] = 1;
+              if (isLitAt(nextX, nextY)) {
+                queue.push({ x: nextX, y: nextY });
+              }
+            }
+          }
+        }
+
+        if (totalWeight <= 0) continue;
+
+        const targetX = weightedX / totalWeight;
+        const targetY = weightedY / totalWeight;
+        const averageDepth = weightedDepth / totalWeight;
+        const averageSize = weightedSize / totalWeight;
+        const baseSize = Math.max(0.8, averageSize * Math.min(1.6, Math.sqrt(pixelCount)));
+
+        pixelExactCandidates.push({
+          sourceX: targetX,
+          sourceY: targetY,
+          depth: averageDepth,
+          r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? (weightedR / totalWeight) : 255)) / 255,
+          g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? (weightedG / totalWeight) : 128)) / 255,
+          b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? (weightedB / totalWeight) : 50)) / 255,
+          size: baseSize,
+          weight: totalWeight
+        });
+      }
+    }
+
+    const merged = new Array(pixelExactCandidates.length).fill(false);
+    const mergeRadiusPixels = 2.75;
+    const mergeRadiusSquared = mergeRadiusPixels * mergeRadiusPixels;
+    const colorDistanceThreshold = 0.28;
+
+    for (let index = 0; index < pixelExactCandidates.length; index++) {
+      if (merged[index]) continue;
+
+      const clusterQueue = [index];
+      merged[index] = true;
+      let queueIndex = 0;
+      let weightedX = 0;
+      let weightedY = 0;
+      let weightedDepth = 0;
+      let weightedSize = 0;
+      let weightedR = 0;
+      let weightedG = 0;
+      let weightedB = 0;
+      let totalWeight = 0;
+
+      while (queueIndex < clusterQueue.length) {
+        const clusterMemberIndex = clusterQueue[queueIndex++];
+        const clusterMember = pixelExactCandidates[clusterMemberIndex];
+
+        weightedX += clusterMember.sourceX * clusterMember.weight;
+        weightedY += clusterMember.sourceY * clusterMember.weight;
+        weightedDepth += clusterMember.depth * clusterMember.weight;
+        weightedSize += clusterMember.size * clusterMember.weight;
+        weightedR += clusterMember.r * clusterMember.weight;
+        weightedG += clusterMember.g * clusterMember.weight;
+        weightedB += clusterMember.b * clusterMember.weight;
+        totalWeight += clusterMember.weight;
+
+        for (let innerIndex = index + 1; innerIndex < pixelExactCandidates.length; innerIndex++) {
+          if (merged[innerIndex]) continue;
+
+          const candidate = pixelExactCandidates[innerIndex];
+          const dx = candidate.sourceX - clusterMember.sourceX;
+          const dy = candidate.sourceY - clusterMember.sourceY;
+          const sourceDistanceSquared = (dx * dx) + (dy * dy);
+          if (sourceDistanceSquared > mergeRadiusSquared) continue;
+
+          const colorDistance = Math.sqrt(
+            Math.pow(candidate.r - clusterMember.r, 2) +
+            Math.pow(candidate.g - clusterMember.g, 2) +
+            Math.pow(candidate.b - clusterMember.b, 2)
+          );
+
+          if (colorDistance > colorDistanceThreshold) continue;
+
+          merged[innerIndex] = true;
+          clusterQueue.push(innerIndex);
+        }
+      }
+
+      points.push({
+        x: ((weightedX / totalWeight) - width / 2) * params.xyScale,
+        y: -((weightedY / totalWeight) - height / 2) * params.xyScale,
+        z: (weightedDepth / totalWeight) * params.depthScale,
+        r: weightedR / totalWeight,
+        g: weightedG / totalWeight,
+        b: weightedB / totalWeight,
+        size: weightedSize / totalWeight,
+        visibility: 1.0
+      });
+    }
+  } else if (params.samplingMode === 'stochastic') {
     // PROBABILISTIC SAMPLING (Best for stippled/dotted art)
     const baseDensity = params.stochasticDensity || 0.5;
     
@@ -153,17 +542,12 @@ export async function processImages(
   } else if (params.samplingMode === 'blob') {
     // BLOB DETECTION MODE
     const visited = new Uint8Array(width * height);
-    const isLit = (x: number, y: number) => {
-      const idx = (y * width + x) * 4;
-      const gray = (0.299 * sourceData[idx] + 0.587 * sourceData[idx + 1] + 0.114 * sourceData[idx + 2]) / 255;
-      return gray >= params.brightnessThreshold;
-    };
 
     for (let y = 0; y < height; y += step) {
       for (let x = 0; x < width; x += step) {
         const idx = y * width + x;
         if (visited[idx]) continue;
-        if (!isLit(x, y)) {
+        if (!isStrictLitAt(x, y)) {
           visited[idx] = 1;
           continue;
         }
@@ -184,7 +568,7 @@ export async function processImages(
           for (const {nx, ny} of neighbors) {
             if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
               const nidx = ny * width + nx;
-              if (!visited[nidx] && isLit(nx, ny)) {
+              if (!visited[nidx] && isStrictLitAt(nx, ny)) {
                 visited[nidx] = 1;
                 queue.push({x: nx, y: ny});
               }
@@ -369,14 +753,14 @@ export async function exportToGLB(points: PointData[]): Promise<Blob> {
   return new Promise((resolve, reject) => {
     exporter.parse(
       pointsMesh,
-      (gltf) => {
+      (gltf: ArrayBuffer | object) => {
         if (gltf instanceof ArrayBuffer) {
           resolve(new Blob([gltf], { type: 'model/gltf-binary' }));
         } else {
           resolve(new Blob([JSON.stringify(gltf)], { type: 'application/json' }));
         }
       },
-      (error) => reject(error),
+      (error: unknown) => reject(error),
       { binary: true }
     );
   });
@@ -422,6 +806,21 @@ export function buildProjectionMesh(
   ctx.drawImage(depthImage, 0, 0, sourceWidth, sourceHeight);
   const depthData = ctx.getImageData(0, 0, sourceWidth, sourceHeight).data;
 
+  const srgbToLinear = (value: number) => {
+    if (value <= 0.04045) {
+      return value / 12.92;
+    }
+
+    return Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+
+  const normalizeDepthValue = (value: number) => {
+    const normalizedValue = Math.max(0, Math.min(1, value));
+    return params.depthColorSpace === 'srgb-linear'
+      ? srgbToLinear(normalizedValue)
+      : normalizedValue;
+  };
+
   const cols = Math.floor(sourceWidth / meshStep);
   const rows = Math.floor(sourceHeight / meshStep);
   const vertCount = cols * rows;
@@ -438,7 +837,7 @@ export function buildProjectionMesh(
       const safeY = Math.min(py, sourceHeight - 1);
       const pi = (safeY * sourceWidth + safeX) * 4;
 
-      let depthVal = depthData[pi] / 255;
+      let depthVal = normalizeDepthValue(depthData[pi] / 255);
       if (params.invertDepth) depthVal = 1 - depthVal;
 
       const i = row * cols + col;

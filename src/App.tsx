@@ -261,6 +261,7 @@ export default function App() {
   // Parameters
   const [params, setParams] = useState<SamplingParams>({
     samplingMode: 'stochastic',
+    depthColorSpace: 'raw',
     brightnessThreshold: 0.1,
     samplingStep: 2,
     stochasticDensity: 0.8,
@@ -1276,7 +1277,7 @@ export default function App() {
       <header className="h-14 border-b border-tech-border flex items-center justify-between px-6 bg-tech-header">
         <div className="flex items-center gap-3">
           <div className="w-3 h-3 bg-tech-accent rounded-full shadow-[0_0_8px_rgba(242,125,38,0.5)]"></div>
-          <span className="font-mono text-sm tracking-widest uppercase font-bold text-tech-text">ILLUMINATED // v1.2.0-STYLIZED</span>
+          <span className="font-mono text-sm tracking-widest uppercase font-bold text-tech-text">ILLUMINATED // v1.2.0</span>
         </div>
         <div className="flex-1 px-8">
            <div className="mono-label opacity-40">Pipeline Status: <span className={status.includes('Error') ? 'text-red-500' : 'text-[#00FF41]'}>{status}</span></div>
@@ -1421,6 +1422,14 @@ export default function App() {
                <div className="w-px h-3 bg-tech-border" />
                <div className="mono-value text-[9px] opacity-40">WEBGL_ACCELERATED_CORE</div>
             </div>
+
+            <button
+              onClick={handleGenerate}
+              disabled={isProcessing || !sourceImg}
+              className="absolute bottom-4 right-4 z-10 px-4 py-2 bg-tech-accent text-black font-bold text-[10px] tracking-widest uppercase hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-all active:scale-[0.98] border border-black/10"
+            >
+              {isProcessing ? 'SYSTEM_RUNNING...' : 'Generate Point Cloud'}
+            </button>
           </div>
 
           {/* Bottom Panels: Logs & Actions */}

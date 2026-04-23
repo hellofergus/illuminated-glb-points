@@ -149,7 +149,7 @@ export function ControlSidebar({
     <aside className="w-[320px] border-r border-tech-border bg-tech-sidebar p-6 flex flex-col gap-8 overflow-y-auto scrollbar-hide">
       <section className="space-y-4">
         <div className="mono-label text-tech-accent uppercase">00 // Core Strategy</div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-5 gap-2">
           <button
             onClick={() => setParams({ ...params, samplingMode: 'grid' })}
             className={`flex flex-col items-center justify-center py-3 border rounded transition-all ${params.samplingMode === 'grid' ? 'bg-tech-border border-tech-accent text-tech-accent' : 'bg-tech-bg/50 border-tech-border text-tech-muted opacity-60'}`}
@@ -167,6 +167,18 @@ export function ControlSidebar({
             className={`flex flex-col items-center justify-center py-3 border rounded transition-all ${params.samplingMode === 'stochastic' ? 'bg-tech-border border-tech-accent text-tech-accent' : 'bg-tech-bg/50 border-tech-border text-tech-muted opacity-60'}`}
           >
             <div className="font-mono text-[9px] mb-1">STIPPLE</div>
+          </button>
+          <button
+            onClick={() => setParams({ ...params, samplingMode: 'pixel-exact' })}
+            className={`flex flex-col items-center justify-center py-3 border rounded transition-all ${params.samplingMode === 'pixel-exact' ? 'bg-tech-border border-tech-accent text-tech-accent' : 'bg-tech-bg/50 border-tech-border text-tech-muted opacity-60'}`}
+          >
+            <div className="font-mono text-[9px] mb-1">PIXEL</div>
+          </button>
+          <button
+            onClick={() => setParams({ ...params, samplingMode: 'dot-detect' })}
+            className={`flex flex-col items-center justify-center py-3 border rounded transition-all ${params.samplingMode === 'dot-detect' ? 'bg-tech-border border-tech-accent text-tech-accent' : 'bg-tech-bg/50 border-tech-border text-tech-muted opacity-60'}`}
+          >
+            <div className="font-mono text-[9px] mb-1">DOT</div>
           </button>
         </div>
       </section>
@@ -204,6 +216,26 @@ export function ControlSidebar({
               >
                 {isAutoDepthLoading ? 'RUNNING_GEN...' : '[ EXECUTE_AUTO_DEPTH ]'}
               </button>
+              <div className="space-y-2 border-t border-tech-border/30 pt-2 mt-1">
+                <div className="flex items-center justify-between">
+                  <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Depth Map Encoding</span>
+                  <span className="mono-value text-[9px] text-tech-accent">{params.depthColorSpace === 'srgb-linear' ? 'LINEARIZED' : 'RAW'}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setParams({ ...params, depthColorSpace: 'raw' }); }}
+                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${params.depthColorSpace === 'raw' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                  >
+                    Raw
+                  </button>
+                  <button
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setParams({ ...params, depthColorSpace: 'srgb-linear' }); }}
+                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${params.depthColorSpace === 'srgb-linear' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                  >
+                    sRGB to Linear
+                  </button>
+                </div>
+              </div>
             </div>
           </label>
 
@@ -295,6 +327,12 @@ export function ControlSidebar({
               />
               <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Reduces chunky clusters</div>
             </div>
+          )}
+          {params.samplingMode === 'pixel-exact' && (
+            <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Full-resolution connected-pixel detection. Best for one-dot-one-point bitmap capture.</div>
+          )}
+          {params.samplingMode === 'dot-detect' && (
+            <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Local-maxima dot center detection with non-maximum suppression. Best for halftone and dot-field artwork.</div>
           )}
           <div className="flex items-center justify-between py-1 border-b border-tech-border/30">
             <span className="mono-value opacity-50 font-mono">Edge Inclusion</span>
@@ -769,13 +807,6 @@ export function ControlSidebar({
         <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Render numeric ids above every visible point</div>
       </section>
 
-      <button
-        onClick={handleGenerate}
-        disabled={isProcessing || !sourceImg}
-        className="mt-auto w-full py-4 bg-tech-accent text-black font-bold text-xs tracking-widest uppercase hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
-      >
-        {isProcessing ? 'SYSTEM_RUNNING...' : 'Generate Point Cloud'}
-      </button>
     </aside>
   );
 }
