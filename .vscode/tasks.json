@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "vite build dev",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"vite",
+				"build",
+				"--mode",
+				"development"
+			],
+			"isBackground": false
+		}
+	]
+}

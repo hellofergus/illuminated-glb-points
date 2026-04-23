@@ -25,29 +25,14 @@ import {
   Undo,
   Redo
 } from 'lucide-react';
-import { processImages, exportToGLB, getAutoDepthMap, SamplingParams, PointData } from './processing/pointSampler';
+import { processImages, exportToGLB, getAutoDepthMap, buildProjectionMesh, SamplingParams, PointData } from './processing/pointSampler';
 import { BrushMode, findNearestHit, getBrushInfluence, getIndicesInRectangle, mergeSelectionIndices, shouldApplyBrushEffect, type ScreenPointHit } from './processing/pointInteraction';
 import { ControlSidebar } from './components/ControlSidebar';
-
-type SavedSelection = {
-  id: string;
-  name: string;
-  indices: number[];
-};
-
-type SelectionDragState = {
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-  append: boolean;
-  remove: boolean;
-};
-
-type HistorySnapshot = {
-  positions: Float32Array;
-  visibility: Float32Array;
-};
+import { createPointCloudManager, disposePointIndexLabels } from './three/pointCloud';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useSelectionActions } from './hooks/useSelectionActions';
+import { applyHistorySnapshot, createHistorySnapshot } from './utils/history';
+import type { HistorySnapshot, SavedSelection, SceneRefs, SelectionDragState } from './types/app';
 
 export default function App() {
   const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
@@ -78,6 +63,14 @@ export default function App() {
   const maxPointSizeRef = useRef(maxPointSize);
   useEffect(() => { maxPointSizeRef.current = maxPointSize; }, [maxPointSize]);
 
+  // Add-point tool state
+  const [addPointSize, setAddPointSize] = useState<number>(1.0);
+  const addPointSizeRef = useRef(addPointSize);
+  useEffect(() => { addPointSizeRef.current = addPointSize; }, [addPointSize]);
+
+  // Projection surface
+  const [showProjectionMesh, setShowProjectionMesh] = useState(false);
+
   // Brush State
   const [brushSettings, setBrushSettings] = useState({
     enabled: false,
@@ -98,6 +91,17 @@ export default function App() {
   const brushSettingsRef = useRef(brushSettings);
   const isBrushingRef = useRef(isBrushing);
   const isAltNavigationRef = useRef(isAltNavigationActive);
+
+  // Stable refs for data accessed inside Three.js event-handler closures
+  const pointsRef = useRef<PointData[]>(points);
+  useEffect(() => { pointsRef.current = points; }, [points]);
+
+  const sourcePixelDataRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+
+  const raycasterRef = useRef(new THREE.Raycaster());
+
+  // Callback ref so Three.js closure can call the latest addNewPoints
+  const addNewPointsCallbackRef = useRef<((pts: PointData[]) => void) | null>(null);
   const selectionModeEnabledRef = useRef(selectionModeEnabled);
   const selectedPointIndicesRef = useRef(selectedPointIndices);
   const selectionDragStateRef = useRef<SelectionDragState | null>(selectionDragState);
@@ -151,14 +155,6 @@ export default function App() {
       target.tagName === 'TEXTAREA' ||
       target.tagName === 'SELECT'
     );
-  };
-
-  const createSavedSelectionId = () => {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID();
-    }
-
-    return `selection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   };
 
   useEffect(() => {
@@ -219,18 +215,14 @@ export default function App() {
     whiteOnlyPoints: false
   });
 
+  const paramsRef = useRef(params);
+  useEffect(() => { paramsRef.current = params; }, [params]);
+
   // Refs
   const canvasRef = useRef<HTMLDivElement>(null);
   const sourceImgRef = useRef<HTMLImageElement>(null);
   const depthImgRef = useRef<HTMLImageElement>(null);
-  const sceneRef = useRef<{
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.WebGLRenderer;
-    controls: OrbitControls;
-    points: THREE.Points | null;
-    pointIndexLabels: THREE.Group | null;
-  } | null>(null);
+  const sceneRef = useRef<SceneRefs | null>(null);
   const brushStrengthPercent = Math.round(brushSettings.strength * 100);
   const brushDepthPercent = Math.round(brushSettings.depthAmount * 100);
   const brushSoftnessPercent = Math.round(brushSettings.softness * 100);
@@ -242,6 +234,41 @@ export default function App() {
     width: Math.abs(selectionDragState.currentX - selectionDragState.startX),
     height: Math.abs(selectionDragState.currentY - selectionDragState.startY)
   } : null;
+
+  const {
+    rebuildPointCloud,
+    rebuildPointIndexLabels,
+    renderPoints,
+    syncPointIndexLabelPositions,
+    syncPointIndexLabelVisibility,
+    syncSelectedPointVisibility
+  } = createPointCloudManager({
+    sceneRef,
+    showPointIndices,
+    getSelectedIndices: () => selectedPointIndicesRef.current
+  });
+
+  const {
+    clearSelectionState,
+    deleteSavedSelection,
+    hideSelectedPoints,
+    restoreSavedSelection,
+    restoreSelectedPoints,
+    saveCurrentSelection,
+    updateSavedSelectionName
+  } = useSelectionActions({
+    pointsLength: points.length,
+    savedSelections,
+    selectedPointIndicesRef,
+    setSelectedPointIndices,
+    setSavedSelections,
+    setSelectionModeEnabled,
+    setBrushSettings,
+    setStatus,
+    pushToHistory: () => pushToHistory(),
+    sceneRef,
+    syncPointIndexLabelVisibility
+  });
 
   // Initialize Three.js
   useEffect(() => {
@@ -275,7 +302,7 @@ export default function App() {
     const mouse = new THREE.Vector2();
     const projectedPoint = new THREE.Vector3();
 
-    sceneRef.current = { scene, camera, renderer, controls, points: null, pointIndexLabels: null };
+    sceneRef.current = { scene, camera, renderer, controls, points: null, pointIndexLabels: null, mesh: null };
 
     const getRendererRect = () => renderer.domElement.getBoundingClientRect();
 
@@ -335,6 +362,104 @@ export default function App() {
       
       const settings = brushSettingsRef.current;
       const indicator = brushIndicatorRef.current;
+
+      // ── Paint / Stamp modes: raycast against the projection surface mesh ──────
+      if (settings.mode === 'paint' || settings.mode === 'stamp') {
+        const projMesh = sceneRef.current.mesh;
+
+        // Update brush indicator position against the projection mesh
+        if (indicator && settings.enabled && !isAltNavigationRef.current) {
+          indicator.visible = true;
+          // For stamp show a small dot; for paint show the full radius
+          const indicatorSize = settings.mode === 'stamp' ? Math.max(10, settings.size * 0.15) : settings.size;
+          indicator.scale.set(indicatorSize, indicatorSize, 1);
+          if (projMesh) {
+            raycasterRef.current.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), sceneRef.current.camera);
+            const meshHits = raycasterRef.current.intersectObject(projMesh);
+            if (meshHits.length > 0) {
+              indicator.position.copy(meshHits[0].point);
+              indicator.lookAt(sceneRef.current.camera.position);
+            } else {
+              const dir = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(sceneRef.current.camera).sub(sceneRef.current.camera.position).normalize();
+              indicator.position.copy(sceneRef.current.camera.position).add(dir.multiplyScalar(200));
+              indicator.lookAt(sceneRef.current.camera.position);
+            }
+          }
+        } else if (indicator) {
+          indicator.visible = false;
+        }
+
+        // Only add points on actual click/drag
+        if (!settings.enabled || isAltNavigationRef.current) return;
+        // stamp: only on initial click; paint: on every move while dragging
+        if (settings.mode === 'stamp' && !forcePaint) return;
+        if (!isBrushingRef.current && !forcePaint) return;
+        if (!projMesh) {
+          setStatus('Notice: Generate a point cloud first to enable paint mode');
+          return;
+        }
+
+        const cam = sceneRef.current.camera;
+        const rc = raycasterRef.current;
+        const currentParams = paramsRef.current;
+        const pixelData = sourcePixelDataRef.current;
+        const currentAddSize = addPointSizeRef.current;
+
+        // Helper: sample color from source image at a given world position
+        const sampleColor = (worldPos: THREE.Vector3): { r: number; g: number; b: number } => {
+          if (!pixelData) return { r: 1, g: 1, b: 1 };
+          const px = Math.round(worldPos.x / currentParams.xyScale + pixelData.width / 2);
+          const py = Math.round(-worldPos.y / currentParams.xyScale + pixelData.height / 2);
+          const cpx = Math.max(0, Math.min(pixelData.width - 1, px));
+          const cpy = Math.max(0, Math.min(pixelData.height - 1, py));
+          const pi = (cpy * pixelData.width + cpx) * 4;
+          return {
+            r: pixelData.data[pi] / 255,
+            g: pixelData.data[pi + 1] / 255,
+            b: pixelData.data[pi + 2] / 255
+          };
+        };
+
+        const newPoints: PointData[] = [];
+
+        if (settings.mode === 'stamp') {
+          // One precise point at cursor
+          rc.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), cam);
+          const hits = rc.intersectObject(projMesh);
+          if (hits.length > 0) {
+            const hp = hits[0].point;
+            const { r, g, b } = sampleColor(hp);
+            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size: currentAddSize, visibility: 1.0 });
+          }
+        } else {
+          // Paint: scatter N points within brush radius
+          const maxCount = Math.max(1, Math.round(settings.size / 30));
+          for (let n = 0; n < maxCount; n++) {
+            if (Math.random() > settings.strength) continue;
+            const angle = Math.random() * Math.PI * 2;
+            const dist = Math.sqrt(Math.random()) * settings.size; // sqrt for uniform disc distribution
+            const ox = Math.cos(angle) * dist;
+            const oy = Math.sin(angle) * dist;
+            const nx = ((pointer.x + ox) / pointer.width) * 2 - 1;
+            const ny = -((pointer.y + oy) / pointer.height) * 2 + 1;
+            rc.setFromCamera(new THREE.Vector2(nx, ny), cam);
+            const hits = rc.intersectObject(projMesh);
+            if (hits.length > 0) {
+              const hp = hits[0].point;
+              const { r, g, b } = sampleColor(hp);
+              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size: currentAddSize, visibility: 1.0 });
+            }
+          }
+        }
+
+        if (newPoints.length > 0) {
+          addNewPointsCallbackRef.current?.(newPoints);
+          setStatus(`Added ${newPoints.length} point${newPoints.length > 1 ? 's' : ''}`);
+        }
+        return;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       const selectionHits = getVisibleProjectedPointIndices();
 
       if (indicator) {
@@ -487,7 +612,9 @@ export default function App() {
 
       if (brushSettingsRef.current.enabled && e.button === 0 && !e.altKey) {
         e.preventDefault();
-        if (brushSettingsRef.current.mode !== 'select') {
+        if (brushSettingsRef.current.mode !== 'select' &&
+            brushSettingsRef.current.mode !== 'paint' &&
+            brushSettingsRef.current.mode !== 'stamp') {
           pushToHistory();
         }
         setIsBrushing(true);
@@ -575,6 +702,37 @@ export default function App() {
   useEffect(() => {
     rebuildPointIndexLabels(points);
   }, [showPointIndices, points]);
+
+  // Capture source image pixel data so paint/stamp can sample colors
+  useEffect(() => {
+    if (!sourceImg || !sourceImgRef.current) {
+      sourcePixelDataRef.current = null;
+      return;
+    }
+    const img = sourceImgRef.current;
+    const capture = () => {
+      if (!img.naturalWidth) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      sourcePixelDataRef.current = { data: imageData.data, width: canvas.width, height: canvas.height };
+    };
+    if (img.complete && img.naturalWidth > 0) capture();
+    else img.addEventListener('load', capture, { once: true });
+  }, [sourceImg]);
+
+  // Toggle projection mesh wireframe visibility for debugging
+  useEffect(() => {
+    if (sceneRef.current?.mesh) {
+      const mat = sceneRef.current.mesh.material as THREE.MeshBasicMaterial;
+      sceneRef.current.mesh.visible = showProjectionMesh;
+      mat.opacity = showProjectionMesh ? 0.25 : 0;
+    }
+  }, [showProjectionMesh]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'source' | 'depth') => {
     const file = e.target.files?.[0];
@@ -671,7 +829,7 @@ export default function App() {
             height: 0,
             pointCount: importedPoints.length
           });
-          renderPoints(importedPoints);
+          renderPoints(importedPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
           setStatus(`Imported ${importedPoints.length} points`);
         } else {
           setStatus('Error: No points found in GLB');
@@ -684,31 +842,9 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  const applyHistorySnapshot = (snapshot: HistorySnapshot) => {
-    if (!sceneRef.current?.points) return;
-
-    const geometry = sceneRef.current.points.geometry;
-    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-
-    visibilityAttr.array.set(snapshot.visibility);
-    visibilityAttr.needsUpdate = true;
-    positionAttr.array.set(snapshot.positions);
-    positionAttr.needsUpdate = true;
-
-    syncPointIndexLabelVisibility();
-    syncPointIndexLabelPositions();
-  };
-
   const pushToHistory = () => {
-    if (!sceneRef.current?.points) return;
-    const geometry = sceneRef.current.points.geometry;
-    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    const currentSnapshot: HistorySnapshot = {
-      visibility: new Float32Array(visibilityAttr.array),
-      positions: new Float32Array(positionAttr.array)
-    };
+    const currentSnapshot = createHistorySnapshot(sceneRef.current);
+    if (!currentSnapshot) return;
     
     setHistory((prev: HistorySnapshot[]) => [...prev.slice(-19), currentSnapshot]); // Keep last 20 steps
     setRedoStack([]); // Clear redo on new action
@@ -716,18 +852,13 @@ export default function App() {
 
   const handleUndo = () => {
     if (history.length === 0 || !sceneRef.current?.points) return;
-    
-    const geometry = sceneRef.current.points.geometry;
-    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    const currentSnapshot: HistorySnapshot = {
-      visibility: new Float32Array(visibilityAttr.array),
-      positions: new Float32Array(positionAttr.array)
-    };
+
+    const currentSnapshot = createHistorySnapshot(sceneRef.current);
+    if (!currentSnapshot) return;
     setRedoStack((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
     const prevSnapshot = history[history.length - 1];
-    applyHistorySnapshot(prevSnapshot);
+    applyHistorySnapshot(sceneRef.current, prevSnapshot, syncPointIndexLabelVisibility, syncPointIndexLabelPositions);
     
     setHistory((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
@@ -735,377 +866,50 @@ export default function App() {
   const handleRedo = () => {
     if (redoStack.length === 0 || !sceneRef.current?.points) return;
 
-    const geometry = sceneRef.current.points.geometry;
-    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    const currentSnapshot: HistorySnapshot = {
-      visibility: new Float32Array(visibilityAttr.array),
-      positions: new Float32Array(positionAttr.array)
-    };
+    const currentSnapshot = createHistorySnapshot(sceneRef.current);
+    if (!currentSnapshot) return;
     setHistory((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
     const nextSnapshot = redoStack[redoStack.length - 1];
-    applyHistorySnapshot(nextSnapshot);
+    applyHistorySnapshot(sceneRef.current, nextSnapshot, syncPointIndexLabelVisibility, syncPointIndexLabelPositions);
 
     setRedoStack((prev: HistorySnapshot[]) => prev.slice(0, -1));
-  };
-
-  const syncSelectedPointVisibility = (indices: number[]) => {
-    if (!sceneRef.current?.points) return;
-
-    const selectedAttr = sceneRef.current.points.geometry.getAttribute('selected') as THREE.BufferAttribute | undefined;
-    if (!selectedAttr) return;
-
-    const selectedArray = selectedAttr.array as Float32Array;
-    selectedArray.fill(0);
-
-    indices.forEach((index) => {
-      if (index >= 0 && index < selectedAttr.count) {
-        selectedAttr.setX(index, 1);
-      }
-    });
-
-    selectedAttr.needsUpdate = true;
-  };
-
-  const clearSelectionState = () => {
-    setSelectedPointIndices([]);
-    setSavedSelections([]);
-  };
-
-  const restoreSavedSelection = (indices: number[]) => {
-    const validIndices = indices
-      .filter((index) => index >= 0 && index < points.length)
-      .sort((left, right) => left - right);
-
-    setSelectedPointIndices(validIndices);
-    if (validIndices.length > 0) {
-      setSelectionModeEnabled(true);
-      setBrushSettings((prev) => ({ ...prev, enabled: false }));
-      setStatus(`Selection restored (${validIndices.length} points)`);
-    }
-  };
-
-  const saveCurrentSelection = () => {
-    if (selectedPointIndicesRef.current.length === 0) {
-      setStatus('Notice: No points selected');
-      return;
-    }
-
-    const nextSelection: SavedSelection = {
-      id: createSavedSelectionId(),
-      name: `Selection ${savedSelections.length + 1}`,
-      indices: [...selectedPointIndicesRef.current].sort((left, right) => left - right)
-    };
-
-    setSavedSelections((prev) => [...prev, nextSelection]);
-    setStatus(`Saved ${nextSelection.name}`);
-  };
-
-  const updateSavedSelectionName = (selectionId: string, name: string) => {
-    setSavedSelections((prev) => prev.map((selection) => (
-      selection.id === selectionId ? { ...selection, name } : selection
-    )));
-  };
-
-  const deleteSavedSelection = (selectionId: string) => {
-    setSavedSelections((prev) => prev.filter((selection) => selection.id !== selectionId));
-  };
-
-  const applyVisibilityToSelectedPoints = (visibility: 0 | 1, statusMessage: string) => {
-    if (!sceneRef.current?.points || selectedPointIndicesRef.current.length === 0) {
-      setStatus('Notice: No points selected');
-      return;
-    }
-
-    pushToHistory();
-
-    const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    selectedPointIndicesRef.current.forEach((index) => {
-      if (index >= 0 && index < visibilityAttr.count) {
-        visibilityAttr.setX(index, visibility);
-      }
-    });
-
-    visibilityAttr.needsUpdate = true;
-    syncPointIndexLabelVisibility();
-    setStatus(statusMessage);
-  };
-
-  const hideSelectedPoints = () => {
-    applyVisibilityToSelectedPoints(0, 'Selected points hidden');
-  };
-
-  const restoreSelectedPoints = () => {
-    applyVisibilityToSelectedPoints(1, 'Selected points restored');
   };
 
   useEffect(() => {
     syncSelectedPointVisibility(selectedPointIndices);
   }, [selectedPointIndices, points]);
 
-  useEffect(() => {
-    const handleShortcutKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) return;
+  useKeyboardShortcuts({
+    brushEnabled: brushSettings.enabled,
+    isEditableTarget,
+    selectionModeEnabledRef,
+    hideSelectedPoints,
+    adjustBrushSize,
+    adjustBrushStrengthPercent,
+    setBrushSoftnessPercent,
+    handleUndo,
+    handleRedo
+  });
 
-      if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'z') {
-        event.preventDefault();
-        if (event.shiftKey) {
-          handleRedo();
-        } else {
-          handleUndo();
-        }
-        return;
-      }
-
-      if (selectionModeEnabledRef.current && event.key === 'Backspace') {
-        event.preventDefault();
-        hideSelectedPoints();
-        return;
-      }
-
-      if (!brushSettings.enabled || event.altKey || event.metaKey) return;
-
-      if (event.key === '[') {
-        event.preventDefault();
-        adjustBrushSize(-5);
-        return;
-      }
-
-      if (event.key === ']') {
-        event.preventDefault();
-        adjustBrushSize(5);
-        return;
-      }
-
-      if (event.key === ',') {
-        event.preventDefault();
-        adjustBrushStrengthPercent(-5);
-        return;
-      }
-
-      if (event.key === '.') {
-        event.preventDefault();
-        adjustBrushStrengthPercent(5);
-        return;
-      }
-
-      if (!event.ctrlKey && /^[0-9]$/.test(event.key)) {
-        event.preventDefault();
-        setBrushSoftnessPercent(event.key === '0' ? 100 : Number(event.key) * 10);
-      }
-    };
-
-    window.addEventListener('keydown', handleShortcutKeyDown);
-
-    return () => {
-      window.removeEventListener('keydown', handleShortcutKeyDown);
-    };
-  }, [brushSettings.enabled, handleRedo, handleUndo]);
-
-  const disposePointIndexLabels = (labelGroup: THREE.Group | null) => {
-    if (!labelGroup) return;
-
-    labelGroup.children.forEach((child) => {
-      const sprite = child as THREE.Sprite;
-      const material = sprite.material as THREE.SpriteMaterial;
-      material.map?.dispose();
-      material.dispose();
-    });
+  /**
+   * Append new hand-painted points to the scene without resetting the camera.
+   * Clears undo/redo history because buffer sizes change, making old
+   * snapshots incompatible.
+   */
+  const addNewPoints = (newPoints: PointData[]) => {
+    const nextPoints = [...pointsRef.current, ...newPoints];
+    pointsRef.current = nextPoints;
+    setPoints(nextPoints);
+    rebuildPointCloud(nextPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
+    setStats((prev) => ({ ...prev, pointCount: nextPoints.length }));
+    // Invalidate history — snapshots become incompatible when the point count grows
+    setHistory([]);
+    setRedoStack([]);
   };
 
-  const rebuildPointIndexLabels = (targetPoints: PointData[]) => {
-    if (!sceneRef.current) return;
-
-    if (sceneRef.current.pointIndexLabels) {
-      sceneRef.current.scene.remove(sceneRef.current.pointIndexLabels);
-      disposePointIndexLabels(sceneRef.current.pointIndexLabels);
-      sceneRef.current.pointIndexLabels = null;
-    }
-
-    if (!showPointIndices || targetPoints.length === 0) return;
-
-    const labelGroup = createPointIndexLabels(targetPoints);
-    sceneRef.current.scene.add(labelGroup);
-    sceneRef.current.pointIndexLabels = labelGroup;
-    syncPointIndexLabelVisibility();
-  };
-
-  const syncPointIndexLabelVisibility = () => {
-    if (!sceneRef.current?.points || !sceneRef.current.pointIndexLabels) return;
-
-    const visibilityAttr = sceneRef.current.points.geometry.getAttribute('visibility') as THREE.BufferAttribute;
-    sceneRef.current.pointIndexLabels.children.forEach((child, index) => {
-      child.visible = visibilityAttr.getX(index) >= 0.5;
-    });
-  };
-
-  const syncPointIndexLabelPositions = () => {
-    if (!sceneRef.current?.points || !sceneRef.current.pointIndexLabels) return;
-
-    const positionAttr = sceneRef.current.points.geometry.getAttribute('position') as THREE.BufferAttribute;
-    const sizeAttr = sceneRef.current.points.geometry.getAttribute('size') as THREE.BufferAttribute;
-
-    sceneRef.current.pointIndexLabels.children.forEach((child: THREE.Object3D, index: number) => {
-      child.position.set(
-        positionAttr.getX(index),
-        positionAttr.getY(index) + Math.max(sizeAttr.getX(index) * 4, 4),
-        positionAttr.getZ(index)
-      );
-    });
-  };
-
-  const createPointIndexLabels = (targetPoints: PointData[]) => {
-    const labelGroup = new THREE.Group();
-    labelGroup.visible = showPointIndices;
-
-    targetPoints.forEach((point, index) => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 128;
-      canvas.height = 64;
-      const ctx = canvas.getContext('2d');
-
-      if (!ctx) return;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'rgba(11, 13, 16, 0.82)';
-      ctx.fillRect(8, 8, canvas.width - 16, canvas.height - 16);
-      ctx.strokeStyle = 'rgba(242, 125, 38, 0.95)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
-      ctx.fillStyle = '#f7f3ea';
-      ctx.font = 'bold 28px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(index), canvas.width / 2, canvas.height / 2);
-
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.needsUpdate = true;
-
-      const material = new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true,
-        depthTest: false,
-        depthWrite: false,
-        sizeAttenuation: true
-      });
-
-      const sprite = new THREE.Sprite(material);
-      sprite.position.set(point.x, point.y + Math.max(point.size * 4, 4), point.z);
-      sprite.scale.set(10, 5, 1);
-      sprite.renderOrder = 10;
-      labelGroup.add(sprite);
-    });
-
-    return labelGroup;
-  };
-
-  const renderPoints = (targetPoints: PointData[]) => {
-    if (!sceneRef.current) return;
-    
-    // Cleanup previous points
-    if (sceneRef.current.points) {
-      sceneRef.current.scene.remove(sceneRef.current.points);
-    }
-    if (sceneRef.current.pointIndexLabels) {
-      sceneRef.current.scene.remove(sceneRef.current.pointIndexLabels);
-      disposePointIndexLabels(sceneRef.current.pointIndexLabels);
-      sceneRef.current.pointIndexLabels = null;
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(targetPoints.length * 3);
-    const colors = new Float32Array(targetPoints.length * 3);
-    const sizes = new Float32Array(targetPoints.length);
-    const selected = new Float32Array(targetPoints.length);
-    const visibilities = new Float32Array(targetPoints.length);
-
-    targetPoints.forEach((p, i) => {
-      positions[i * 3] = p.x;
-      positions[i * 3 + 1] = p.y;
-      positions[i * 3 + 2] = p.z;
-      colors[i * 3] = p.r;
-      colors[i * 3 + 1] = p.g;
-      colors[i * 3 + 2] = p.b;
-      sizes[i] = p.size || 1.0;
-      visibilities[i] = p.visibility ?? 1.0;
-    });
-
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-    geometry.setAttribute('selected', new THREE.BufferAttribute(selected, 1));
-    geometry.setAttribute('visibility', new THREE.BufferAttribute(visibilities, 1));
-
-    const material = new THREE.ShaderMaterial({
-      uniforms: {
-        uPointSizeScale: { value: params.pointSizeMultiplier },
-        uMaxPointSize: { value: maxPointSizeRef.current }
-      },
-      vertexShader: `
-        uniform float uPointSizeScale;
-        uniform float uMaxPointSize;
-        attribute float size;
-        attribute float selected;
-        attribute float visibility;
-        varying vec3 vColor;
-        varying float vSelected;
-        varying float vVisibility;
-        void main() {
-          vColor = color;
-          vSelected = selected;
-          vVisibility = visibility;
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = min(size * uPointSizeScale * mix(1.0, 1.75, selected) * (500.0 / -mvPosition.z), uMaxPointSize);
-          gl_Position = projectionMatrix * mvPosition;
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vColor;
-        varying float vSelected;
-        varying float vVisibility;
-        void main() {
-          if (length(gl_PointCoord - vec2(0.5, 0.5)) > 0.5) discard;
-
-          bool isHidden = vVisibility < 0.5;
-          bool isSelected = vSelected > 0.5;
-
-          if (isHidden && !isSelected) discard;
-          
-          vec3 visibleSelectionColor = vec3(1.0, 0.55, 0.12);
-          vec3 hiddenSelectionColor = vec3(0.45, 0.8, 1.0);
-          vec3 finalColor = vColor;
-
-          if (isSelected) {
-            finalColor = isHidden ? hiddenSelectionColor : visibleSelectionColor;
-          }
-
-          gl_FragColor = vec4(finalColor, 1.0);
-        }
-      `,
-      transparent: false,
-      vertexColors: true
-    });
-
-    const pointsMesh = new THREE.Points(geometry, material);
-    sceneRef.current.scene.add(pointsMesh);
-    sceneRef.current.points = pointsMesh;
-    syncSelectedPointVisibility(selectedPointIndicesRef.current);
-    rebuildPointIndexLabels(targetPoints);
-    
-    // Fit camera to object
-    const box = new THREE.Box3().setFromObject(pointsMesh);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const safeMaxDim = Math.max(maxDim, 100);
-    const fov = sceneRef.current.camera.fov * (Math.PI / 180);
-    let cameraZ = Math.abs(safeMaxDim / 2 / Math.tan(fov / 2)) * 1.8;
-    sceneRef.current.camera.position.set(center.x, center.y, center.z + cameraZ);
-    sceneRef.current.camera.updateProjectionMatrix();
-    sceneRef.current.controls.target.copy(center);
-    sceneRef.current.controls.update();
-  };
+  // Keep the callback ref up to date so the Three.js closure can call addNewPoints
+  useEffect(() => { addNewPointsCallbackRef.current = addNewPoints; });
 
   const handleGenerate = async () => {
     if (!sourceImgRef.current || !sourceImg) {
@@ -1137,7 +941,28 @@ export default function App() {
         pointCount: result.length
       });
 
-      renderPoints(result);
+      renderPoints(result, params.pointSizeMultiplier, maxPointSizeRef.current);
+
+      // Build / rebuild projection surface mesh for paint/stamp modes
+      if (sceneRef.current) {
+        if (sceneRef.current.mesh) {
+          sceneRef.current.scene.remove(sceneRef.current.mesh);
+          sceneRef.current.mesh.geometry.dispose();
+          sceneRef.current.mesh = null;
+        }
+        if (depthImgRef.current && depthImg) {
+          const projMesh = buildProjectionMesh(
+            depthImgRef.current,
+            params,
+            sourceImgRef.current.naturalWidth,
+            sourceImgRef.current.naturalHeight
+          );
+          projMesh.visible = showProjectionMesh;
+          sceneRef.current.scene.add(projMesh);
+          sceneRef.current.mesh = projMesh;
+        }
+      }
+
       setStatus('Success: Points generated');
     } catch (err) {
       console.error(err);
@@ -1274,6 +1099,10 @@ export default function App() {
           deleteSavedSelection={deleteSavedSelection}
           maxPointSize={maxPointSize}
           setMaxPointSize={setMaxPointSize}
+          addPointSize={addPointSize}
+          setAddPointSize={setAddPointSize}
+          showProjectionMesh={showProjectionMesh}
+          setShowProjectionMesh={setShowProjectionMesh}
         />
 
         {/* Right Content: Previews & Visualizers */}

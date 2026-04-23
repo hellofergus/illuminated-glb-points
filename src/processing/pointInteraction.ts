@@ -1,4 +1,4 @@
-export type BrushMode = 'hide' | 'reveal' | 'select' | 'push' | 'pull';
+export type BrushMode = 'hide' | 'reveal' | 'select' | 'push' | 'pull' | 'paint' | 'stamp';
 
 export type ScreenPointHit = {
   index: number;

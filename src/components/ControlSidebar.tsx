@@ -55,6 +55,10 @@ type ControlSidebarProps = {
   deleteSavedSelection: (selectionId: string) => void;
   maxPointSize: number;
   setMaxPointSize: (value: number) => void;
+  addPointSize: number;
+  setAddPointSize: (value: number) => void;
+  showProjectionMesh: boolean;
+  setShowProjectionMesh: (value: boolean) => void;
 };
 
 export function ControlSidebar({
@@ -94,7 +98,11 @@ export function ControlSidebar({
   updateSavedSelectionName,
   deleteSavedSelection,
   maxPointSize,
-  setMaxPointSize
+  setMaxPointSize,
+  addPointSize,
+  setAddPointSize,
+  showProjectionMesh,
+  setShowProjectionMesh
 }: ControlSidebarProps) {
   return (
     <aside className="w-[320px] border-r border-tech-border bg-tech-sidebar p-6 flex flex-col gap-8 overflow-y-auto scrollbar-hide">
@@ -404,6 +412,18 @@ export function ControlSidebar({
                 Depth In
               </button>
               <button
+                onClick={() => setBrushSettings({ ...brushSettings, mode: 'paint' })}
+                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'paint' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
+              >
+                <Paintbrush className="w-3 h-3" /> Paint
+              </button>
+              <button
+                onClick={() => setBrushSettings({ ...brushSettings, mode: 'stamp' })}
+                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'stamp' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
+              >
+                + Stamp
+              </button>
+              <button
                 onClick={() => setBrushSettings({ ...brushSettings, mode: 'select' })}
                 className={`col-span-2 flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
               >
@@ -468,7 +488,34 @@ export function ControlSidebar({
               />
             </div>
 
-            <div className="text-[8px] opacity-40 font-mono italic">Brush can hide, reveal, move depth out or in, or add to selection. Depth Amount is relative to the current depth scale. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
+            {(brushSettings.mode === 'paint' || brushSettings.mode === 'stamp') && (
+              <div className="space-y-3 pt-3 border-t border-tech-border/30 animate-in fade-in slide-in-from-top-1 duration-200">
+                <div>
+                  <div className="flex justify-between mono-value mb-1 font-mono text-[9px]">
+                    <span className="opacity-50">New Point Size</span>
+                    <span>{addPointSize.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range" min="0.1" max="5" step="0.05"
+                    value={addPointSize}
+                    onChange={(e) => setAddPointSize(parseFloat(e.target.value))}
+                    className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="mono-value opacity-50 font-mono text-[9px]">Show Surface Mesh</span>
+                  <button
+                    onClick={() => setShowProjectionMesh(!showProjectionMesh)}
+                    className={`w-8 h-4 border border-tech-subtle-border rounded-full transition-colors relative ${showProjectionMesh ? 'bg-tech-accent' : 'bg-tech-border'}`}
+                  >
+                    <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${showProjectionMesh ? 'right-1' : 'left-1'}`} />
+                  </button>
+                </div>
+                <div className="text-[8px] opacity-40 font-mono italic">Paint scatters new points onto the depth-anchored surface. Stamp places one precise point per click. Generate a point cloud first to enable the surface.</div>
+              </div>
+            )}
+
+            <div className="text-[8px] opacity-40 font-mono italic">Brush can hide, reveal, move depth out or in, add to selection, or paint/stamp new points. Depth Amount is relative to the current depth scale. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
           </div>
         )}
       </section>

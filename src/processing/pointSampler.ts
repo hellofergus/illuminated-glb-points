@@ -392,3 +392,84 @@ export async function getAutoDepthMap(image: HTMLImageElement): Promise<string |
   // Alternatively, could return a simple gradient map as a "mock"
   return null;
 }
+
+/**
+ * Build an invisible displacement mesh from a depth image that can be used
+ * as a projection surface for raycasting — so new points can be painted
+ * in 3D space by anchoring mouse clicks to a real Z value.
+ *
+ * The coordinate transform matches processImages() exactly:
+ *   x = (px - width/2)  * xyScale
+ *   y = -(py - height/2) * xyScale
+ *   z = depthValue * depthScale
+ */
+export function buildProjectionMesh(
+  depthImage: HTMLImageElement,
+  params: SamplingParams,
+  sourceWidth: number,
+  sourceHeight: number
+): THREE.Mesh {
+  const meshStep = 4; // 1 vertex per 4 pixels — enough detail without being heavy
+
+  const canvas = document.createElement('canvas');
+  // Use source image dimensions — processImages does the same: draws depth scaled to source size
+  canvas.width = sourceWidth;
+  canvas.height = sourceHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get 2D context for projection mesh');
+  // Draw depth image stretched to source dimensions, exactly matching processImages coordinate space
+  ctx.drawImage(depthImage, 0, 0, sourceWidth, sourceHeight);
+  const depthData = ctx.getImageData(0, 0, sourceWidth, sourceHeight).data;
+
+  const cols = Math.floor(sourceWidth / meshStep);
+  const rows = Math.floor(sourceHeight / meshStep);
+  const vertCount = cols * rows;
+
+  const positions = new Float32Array(vertCount * 3);
+  const indices: number[] = [];
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const px = col * meshStep;
+      const py = row * meshStep;
+      const safeX = Math.min(px, sourceWidth - 1);
+      const safeY = Math.min(py, sourceHeight - 1);
+      const pi = (safeY * sourceWidth + safeX) * 4;
+
+      let depthVal = depthData[pi] / 255;
+      if (params.invertDepth) depthVal = 1 - depthVal;
+
+      const i = row * cols + col;
+      positions[i * 3]     = (px - sourceWidth / 2) * params.xyScale;
+      positions[i * 3 + 1] = -(py - sourceHeight / 2) * params.xyScale;
+      positions[i * 3 + 2] = depthVal * params.depthScale;
+
+      if (col < cols - 1 && row < rows - 1) {
+        const a = i;
+        const b = i + 1;
+        const c = i + cols;
+        const d = i + cols + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x00ccff,
+    wireframe: true,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'projectionSurface';
+  // Invisible by default; toggle for debug view
+  mesh.visible = false;
+  return mesh;
+}
