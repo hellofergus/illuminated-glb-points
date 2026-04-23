@@ -1,36 +1,49 @@
 import * as THREE from 'three';
 import type { HistorySnapshot, SceneRefs } from '../types/app';
+import type { PointData } from '../processing/pointSampler';
 
-export const createHistorySnapshot = (sceneRef: SceneRefs | null): HistorySnapshot | null => {
-  if (!sceneRef?.points) return null;
+const clonePoints = (points: PointData[]) => points.map((point) => ({ ...point }));
+
+const syncPointsFromScene = (
+  sceneRef: SceneRefs | null,
+  currentPoints: PointData[]
+): PointData[] => {
+  if (!sceneRef?.points) {
+    return clonePoints(currentPoints);
+  }
 
   const geometry = sceneRef.points.geometry;
   const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
   const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
 
+  return currentPoints.map((point, index) => ({
+    ...point,
+    x: index < positionAttr.count ? positionAttr.getX(index) : point.x,
+    y: index < positionAttr.count ? positionAttr.getY(index) : point.y,
+    z: index < positionAttr.count ? positionAttr.getZ(index) : point.z,
+    visibility: index < visibilityAttr.count ? visibilityAttr.getX(index) : point.visibility
+  }));
+};
+
+export const createHistorySnapshot = (
+  sceneRef: SceneRefs | null,
+  currentPoints: PointData[],
+  selectedPointIndices: number[]
+): HistorySnapshot | null => {
+  if (currentPoints.length === 0) return null;
+
   return {
-    visibility: new Float32Array(visibilityAttr.array as ArrayLike<number>),
-    positions: new Float32Array(positionAttr.array as ArrayLike<number>)
+    points: syncPointsFromScene(sceneRef, currentPoints),
+    selectedPointIndices: [...selectedPointIndices]
   };
 };
 
 export const applyHistorySnapshot = (
-  sceneRef: SceneRefs | null,
   snapshot: HistorySnapshot,
-  syncPointIndexLabelVisibility: () => void,
-  syncPointIndexLabelPositions: () => void
+  applyPoints: (points: PointData[]) => void,
+  applySelection: (selectedPointIndices: number[]) => void
 ) => {
-  if (!sceneRef?.points) return;
-
-  const geometry = sceneRef.points.geometry;
-  const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
-  const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-
-  visibilityAttr.array.set(snapshot.visibility);
-  visibilityAttr.needsUpdate = true;
-  positionAttr.array.set(snapshot.positions);
-  positionAttr.needsUpdate = true;
-
-  syncPointIndexLabelVisibility();
-  syncPointIndexLabelPositions();
+  const nextPoints = clonePoints(snapshot.points);
+  applyPoints(nextPoints);
+  applySelection(snapshot.selectedPointIndices.filter((index) => index >= 0 && index < nextPoints.length));
 };

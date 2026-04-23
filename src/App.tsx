@@ -32,7 +32,18 @@ import { createPointCloudManager, disposePointIndexLabels } from './three/pointC
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useSelectionActions } from './hooks/useSelectionActions';
 import { applyHistorySnapshot, createHistorySnapshot } from './utils/history';
-import type { HistorySnapshot, SavedSelection, SceneRefs, SelectionDragState } from './types/app';
+import type {
+  ActiveTool,
+  AddAction,
+  AddAppearanceSource,
+  DepthAction,
+  HistorySnapshot,
+  SavedSelection,
+  SceneRefs,
+  SelectionDragState,
+  ToolInteractionMode,
+  VisibilityBrushAction
+} from './types/app';
 
 export default function App() {
   const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
@@ -70,6 +81,16 @@ export default function App() {
 
   // Projection surface
   const [showProjectionMesh, setShowProjectionMesh] = useState(false);
+  const [projectionMeshOpacityPercent, setProjectionMeshOpacityPercent] = useState<number>(20);
+
+  // Tool model
+  const [activeTool, setActiveTool] = useState<ActiveTool>('visibility');
+  const [toolInteractionMode, setToolInteractionMode] = useState<ToolInteractionMode>('brush');
+  const [visibilityBrushAction, setVisibilityBrushAction] = useState<VisibilityBrushAction>('hide');
+  const [depthAction, setDepthAction] = useState<DepthAction>('push');
+  const [addAction, setAddAction] = useState<AddAction>('single');
+  const [addAppearanceSource, setAddAppearanceSource] = useState<AddAppearanceSource>('image');
+  const [isPickingCloneSource, setIsPickingCloneSource] = useState(false);
 
   // Brush State
   const [brushSettings, setBrushSettings] = useState({
@@ -97,6 +118,10 @@ export default function App() {
   useEffect(() => { pointsRef.current = points; }, [points]);
 
   const sourcePixelDataRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+  const addAppearanceSourceRef = useRef(addAppearanceSource);
+  useEffect(() => { addAppearanceSourceRef.current = addAppearanceSource; }, [addAppearanceSource]);
+  const isPickingCloneSourceRef = useRef(isPickingCloneSource);
+  useEffect(() => { isPickingCloneSourceRef.current = isPickingCloneSource; }, [isPickingCloneSource]);
 
   const raycasterRef = useRef(new THREE.Raycaster());
 
@@ -197,6 +222,42 @@ export default function App() {
     }
   }, [brushSettings.enabled, brushSettings.size, isAltNavigationActive, selectionModeEnabled]);
 
+  // Bridge the higher-level tool model into the existing selection + brush engine.
+  useEffect(() => {
+    if (activeTool === 'visibility') {
+      if (toolInteractionMode === 'arrow') {
+        setSelectionModeEnabled(true);
+        setBrushSettings((prev) => ({ ...prev, enabled: false, mode: 'select' }));
+        return;
+      }
+
+      setSelectionModeEnabled(false);
+      setBrushSettings((prev) => ({
+        ...prev,
+        enabled: true,
+        mode: visibilityBrushAction
+      }));
+      return;
+    }
+
+    if (activeTool === 'depth') {
+      setSelectionModeEnabled(false);
+      setBrushSettings((prev) => ({
+        ...prev,
+        enabled: true,
+        mode: depthAction
+      }));
+      return;
+    }
+
+    setSelectionModeEnabled(false);
+    setBrushSettings((prev) => ({
+      ...prev,
+      enabled: true,
+      mode: addAction === 'single' ? 'stamp' : 'paint'
+    }));
+  }, [activeTool, addAction, depthAction, toolInteractionMode, visibilityBrushAction]);
+
   // Parameters
   const [params, setParams] = useState<SamplingParams>({
     samplingMode: 'stochastic',
@@ -228,6 +289,12 @@ export default function App() {
   const brushSoftnessPercent = Math.round(brushSettings.softness * 100);
   const sortedSelectedPointIndices = [...selectedPointIndices].sort((left, right) => left - right);
   const selectedPointCount = sortedSelectedPointIndices.length;
+  const addedPointCount = points.reduce((count: number, point: PointData) => count + (point.isAdded ? 1 : 0), 0);
+  const selectedAddedPointCount = sortedSelectedPointIndices.reduce(
+    (count: number, index: number) => count + (points[index]?.isAdded ? 1 : 0),
+    0
+  );
+  const cloneSourceIndex = selectedPointCount === 1 ? sortedSelectedPointIndices[0] : null;
   const selectionRect = selectionDragState ? {
     left: Math.min(selectionDragState.startX, selectionDragState.currentX),
     top: Math.min(selectionDragState.startY, selectionDragState.currentY),
@@ -366,6 +433,8 @@ export default function App() {
       // ── Paint / Stamp modes: raycast against the projection surface mesh ──────
       if (settings.mode === 'paint' || settings.mode === 'stamp') {
         const projMesh = sceneRef.current.mesh;
+        const currentAppearanceSource = addAppearanceSourceRef.current;
+        const currentIsPickingCloneSource = isPickingCloneSourceRef.current;
 
         // Update brush indicator position against the projection mesh
         if (indicator && settings.enabled && !isAltNavigationRef.current) {
@@ -399,17 +468,55 @@ export default function App() {
           return;
         }
 
+        if (currentAppearanceSource === 'clone-selected' && settings.mode === 'stamp' && forcePaint && currentIsPickingCloneSource) {
+          const nearestCloneSourceHit = findNearestHit(
+            getVisibleProjectedPointIndices(),
+            pointer.x,
+            pointer.y,
+            16
+          );
+
+          if (nearestCloneSourceHit) {
+            const cloneSourceHit = nearestCloneSourceHit;
+            setSelectedPointIndices([cloneSourceHit.index]);
+            setIsPickingCloneSource(false);
+            setStatus(`Clone source set to point ${cloneSourceHit.index}`);
+          } else {
+            setStatus('Notice: Click a visible point to set the clone source');
+          }
+
+          return;
+        }
+
         const cam = sceneRef.current.camera;
         const rc = raycasterRef.current;
         const currentParams = paramsRef.current;
         const pixelData = sourcePixelDataRef.current;
         const currentAddSize = addPointSizeRef.current;
 
-        // Helper: sample color from source image at a given world position
-        const sampleColor = (worldPos: THREE.Vector3): { r: number; g: number; b: number } => {
+        const getClonedPointAppearance = (): { r: number; g: number; b: number; size: number } | null => {
+          if (!sceneRef.current?.points) return null;
+          if (selectedPointIndicesRef.current.length !== 1) return null;
+
+          const cloneIndex = selectedPointIndicesRef.current[0];
+          const geometry = sceneRef.current.points.geometry;
+          const colorAttr = geometry.getAttribute('color') as THREE.BufferAttribute;
+          const sizeAttr = geometry.getAttribute('size') as THREE.BufferAttribute;
+
+          if (cloneIndex < 0 || cloneIndex >= colorAttr.count || cloneIndex >= sizeAttr.count) {
+            return null;
+          }
+
+          return {
+            r: colorAttr.getX(cloneIndex),
+            g: colorAttr.getY(cloneIndex),
+            b: colorAttr.getZ(cloneIndex),
+            size: sizeAttr.getX(cloneIndex)
+          };
+        };
+
+        const getPixelColor = (px: number, py: number): { r: number; g: number; b: number } => {
           if (!pixelData) return { r: 1, g: 1, b: 1 };
-          const px = Math.round(worldPos.x / currentParams.xyScale + pixelData.width / 2);
-          const py = Math.round(-worldPos.y / currentParams.xyScale + pixelData.height / 2);
           const cpx = Math.max(0, Math.min(pixelData.width - 1, px));
           const cpy = Math.max(0, Math.min(pixelData.height - 1, py));
           const pi = (cpy * pixelData.width + cpx) * 4;
@@ -417,6 +524,98 @@ export default function App() {
             r: pixelData.data[pi] / 255,
             g: pixelData.data[pi + 1] / 255,
             b: pixelData.data[pi + 2] / 255
+          };
+        };
+
+        const getColorLuminance = ({ r, g, b }: { r: number; g: number; b: number }) => {
+          return (0.299 * r) + (0.587 * g) + (0.114 * b);
+        };
+
+        const findNearbyNonBackgroundColor = (centerPx: number, centerPy: number): { r: number; g: number; b: number } | null => {
+          if (!pixelData) return null;
+
+          const maxRadius = 12;
+          const backgroundThreshold = 0.045;
+
+          for (let radius = 1; radius <= maxRadius; radius++) {
+            let bestColor: { r: number; g: number; b: number } | null = null;
+            let bestLuminance = backgroundThreshold;
+
+            for (let dy = -radius; dy <= radius; dy++) {
+              for (let dx = -radius; dx <= radius; dx++) {
+                const samplePx = Math.max(0, Math.min(pixelData.width - 1, centerPx + dx));
+                const samplePy = Math.max(0, Math.min(pixelData.height - 1, centerPy + dy));
+                const color = getPixelColor(samplePx, samplePy);
+                const luminance = getColorLuminance(color);
+
+                if (luminance > bestLuminance) {
+                  bestColor = color;
+                  bestLuminance = luminance;
+                }
+              }
+            }
+
+            if (bestColor) {
+              return bestColor;
+            }
+          }
+
+          return null;
+        };
+
+        const sampleImageColorFromUv = (uv?: THREE.Vector2 | null): { r: number; g: number; b: number } | null => {
+          if (!pixelData || !uv) return null;
+
+          const px = Math.round(Math.max(0, Math.min(1, uv.x)) * (pixelData.width - 1));
+          const py = Math.round((1 - Math.max(0, Math.min(1, uv.y))) * (pixelData.height - 1));
+          const directColor = getPixelColor(px, py);
+
+          if (getColorLuminance(directColor) > 0.045) {
+            return directColor;
+          }
+
+          return findNearbyNonBackgroundColor(px, py) ?? directColor;
+        };
+
+        const sampleColor = (worldPos: THREE.Vector3, uv?: THREE.Vector2 | null): { r: number; g: number; b: number } => {
+          const uvColor = sampleImageColorFromUv(uv);
+          if (uvColor) {
+            return uvColor;
+          }
+
+          if (!pixelData) return { r: 1, g: 1, b: 1 };
+
+          const px = Math.round(worldPos.x / currentParams.xyScale + pixelData.width / 2);
+          const py = Math.round(-worldPos.y / currentParams.xyScale + pixelData.height / 2);
+          const directColor = getPixelColor(px, py);
+
+          if (getColorLuminance(directColor) > 0.045) {
+            return directColor;
+          }
+
+          return findNearbyNonBackgroundColor(px, py) ?? directColor;
+        };
+
+        const clonedAppearance = currentAppearanceSource === 'clone-selected'
+          ? getClonedPointAppearance()
+          : null;
+
+        if (currentAppearanceSource === 'clone-selected' && !clonedAppearance) {
+          setStatus(currentIsPickingCloneSource
+            ? 'Notice: Click a visible point to set the clone source'
+            : 'Notice: Pick exactly one source point to clone its size and color');
+          return;
+        }
+
+        const resolveAppearance = (worldPos: THREE.Vector3, uv?: THREE.Vector2 | null) => {
+          if (clonedAppearance) {
+            return clonedAppearance;
+          }
+
+          const sampledColor = sampleColor(worldPos, uv);
+          return {
+            ...sampledColor,
+            size: currentAddSize
           };
         };
 
@@ -428,8 +627,8 @@ export default function App() {
           const hits = rc.intersectObject(projMesh);
           if (hits.length > 0) {
             const hp = hits[0].point;
-            const { r, g, b } = sampleColor(hp);
-            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size: currentAddSize, visibility: 1.0 });
+            const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
+            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size, visibility: 1.0 });
           }
         } else {
           // Paint: scatter N points within brush radius
@@ -446,8 +645,8 @@ export default function App() {
             const hits = rc.intersectObject(projMesh);
             if (hits.length > 0) {
               const hp = hits[0].point;
-              const { r, g, b } = sampleColor(hp);
-              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size: currentAddSize, visibility: 1.0 });
+              const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
+              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size, visibility: 1.0 });
             }
           }
         }
@@ -610,11 +809,9 @@ export default function App() {
         return;
       }
 
-      if (brushSettingsRef.current.enabled && e.button === 0 && !e.altKey) {
+        if (brushSettingsRef.current.enabled && e.button === 0 && !e.altKey) {
         e.preventDefault();
-        if (brushSettingsRef.current.mode !== 'select' &&
-            brushSettingsRef.current.mode !== 'paint' &&
-            brushSettingsRef.current.mode !== 'stamp') {
+        if (brushSettingsRef.current.mode !== 'select') {
           pushToHistory();
         }
         setIsBrushing(true);
@@ -729,10 +926,10 @@ export default function App() {
   useEffect(() => {
     if (sceneRef.current?.mesh) {
       const mat = sceneRef.current.mesh.material as THREE.MeshBasicMaterial;
-      sceneRef.current.mesh.visible = showProjectionMesh;
-      mat.opacity = showProjectionMesh ? 0.25 : 0;
+      sceneRef.current.mesh.visible = true;
+      mat.opacity = showProjectionMesh ? projectionMeshOpacityPercent / 100 : 0;
     }
-  }, [showProjectionMesh]);
+  }, [projectionMeshOpacityPercent, showProjectionMesh]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'source' | 'depth') => {
     const file = e.target.files?.[0];
@@ -815,7 +1012,8 @@ export default function App() {
                 g: colors ? colors[i * 3 + 1] : 1,
                 b: colors ? colors[i * 3 + 2] : 1,
                 size: sizes ? sizes[i] : 1,
-                visibility: 1.0
+                visibility: 1.0,
+                isAdded: false
               });
             }
           }
@@ -823,6 +1021,8 @@ export default function App() {
 
         if (importedPoints.length > 0) {
           clearSelectionState();
+          setHistory([]);
+          setRedoStack([]);
           setPoints(importedPoints);
           setStats({
             width: 0,
@@ -842,8 +1042,19 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
+  const applyPointSnapshot = (nextPoints: PointData[]) => {
+    pointsRef.current = nextPoints;
+    setPoints(nextPoints);
+    rebuildPointCloud(nextPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
+    setStats((prev: { width: number; height: number; pointCount: number }) => ({ ...prev, pointCount: nextPoints.length }));
+  };
+
   const pushToHistory = () => {
-    const currentSnapshot = createHistorySnapshot(sceneRef.current);
+    const currentSnapshot = createHistorySnapshot(
+      sceneRef.current,
+      pointsRef.current,
+      selectedPointIndicesRef.current
+    );
     if (!currentSnapshot) return;
     
     setHistory((prev: HistorySnapshot[]) => [...prev.slice(-19), currentSnapshot]); // Keep last 20 steps
@@ -851,27 +1062,35 @@ export default function App() {
   };
 
   const handleUndo = () => {
-    if (history.length === 0 || !sceneRef.current?.points) return;
+    if (history.length === 0) return;
 
-    const currentSnapshot = createHistorySnapshot(sceneRef.current);
+    const currentSnapshot = createHistorySnapshot(
+      sceneRef.current,
+      pointsRef.current,
+      selectedPointIndicesRef.current
+    );
     if (!currentSnapshot) return;
     setRedoStack((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
     const prevSnapshot = history[history.length - 1];
-    applyHistorySnapshot(sceneRef.current, prevSnapshot, syncPointIndexLabelVisibility, syncPointIndexLabelPositions);
+    applyHistorySnapshot(prevSnapshot, applyPointSnapshot, setSelectedPointIndices);
     
     setHistory((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
 
   const handleRedo = () => {
-    if (redoStack.length === 0 || !sceneRef.current?.points) return;
+    if (redoStack.length === 0) return;
 
-    const currentSnapshot = createHistorySnapshot(sceneRef.current);
+    const currentSnapshot = createHistorySnapshot(
+      sceneRef.current,
+      pointsRef.current,
+      selectedPointIndicesRef.current
+    );
     if (!currentSnapshot) return;
     setHistory((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
     const nextSnapshot = redoStack[redoStack.length - 1];
-    applyHistorySnapshot(sceneRef.current, nextSnapshot, syncPointIndexLabelVisibility, syncPointIndexLabelPositions);
+    applyHistorySnapshot(nextSnapshot, applyPointSnapshot, setSelectedPointIndices);
 
     setRedoStack((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
@@ -892,20 +1111,43 @@ export default function App() {
     handleRedo
   });
 
-  /**
-   * Append new hand-painted points to the scene without resetting the camera.
-   * Clears undo/redo history because buffer sizes change, making old
-   * snapshots incompatible.
-   */
   const addNewPoints = (newPoints: PointData[]) => {
-    const nextPoints = [...pointsRef.current, ...newPoints];
-    pointsRef.current = nextPoints;
-    setPoints(nextPoints);
-    rebuildPointCloud(nextPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
-    setStats((prev) => ({ ...prev, pointCount: nextPoints.length }));
-    // Invalidate history — snapshots become incompatible when the point count grows
-    setHistory([]);
-    setRedoStack([]);
+    const nextPoints = [
+      ...pointsRef.current,
+      ...newPoints.map((point) => ({ ...point, isAdded: true }))
+    ];
+    applyPointSnapshot(nextPoints);
+  };
+
+  const handleRemoveSelectedAddedPoints = () => {
+    const selectedAddedIndices = selectedPointIndicesRef.current.filter((index: number) => pointsRef.current[index]?.isAdded);
+
+    if (selectedAddedIndices.length === 0) {
+      setStatus('Notice: Select added points to remove them from the added layer');
+      return;
+    }
+
+    pushToHistory();
+    const selectedAddedSet = new Set(selectedAddedIndices);
+    const nextPoints = pointsRef.current.filter((_: PointData, index: number) => !selectedAddedSet.has(index));
+    applyPointSnapshot(nextPoints);
+    setSelectedPointIndices([]);
+    setStatus(`Removed ${selectedAddedIndices.length} added point${selectedAddedIndices.length === 1 ? '' : 's'}`);
+  };
+
+  const handleClearAddedPoints = () => {
+    const currentAddedPointCount = pointsRef.current.reduce((count: number, point: PointData) => count + (point.isAdded ? 1 : 0), 0);
+
+    if (currentAddedPointCount === 0) {
+      setStatus('Notice: No added points to clear');
+      return;
+    }
+
+    pushToHistory();
+    const nextPoints = pointsRef.current.filter((point: PointData) => !point.isAdded);
+    applyPointSnapshot(nextPoints);
+    setSelectedPointIndices([]);
+    setStatus(`Cleared ${currentAddedPointCount} added point${currentAddedPointCount === 1 ? '' : 's'}`);
   };
 
   // Keep the callback ref up to date so the Three.js closure can call addNewPoints
@@ -932,16 +1174,20 @@ export default function App() {
         depthImgRef.current,
         params
       );
+      const basePoints = result.map((point) => ({ ...point, isAdded: false }));
 
       clearSelectionState();
-      setPoints(result);
+      pointsRef.current = basePoints;
+      setHistory([]);
+      setRedoStack([]);
+      setPoints(basePoints);
       setStats({
         width: sourceImgRef.current.naturalWidth,
         height: sourceImgRef.current.naturalHeight,
-        pointCount: result.length
+        pointCount: basePoints.length
       });
 
-      renderPoints(result, params.pointSizeMultiplier, maxPointSizeRef.current);
+      renderPoints(basePoints, params.pointSizeMultiplier, maxPointSizeRef.current);
 
       // Build / rebuild projection surface mesh for paint/stamp modes
       if (sceneRef.current) {
@@ -957,7 +1203,8 @@ export default function App() {
             sourceImgRef.current.naturalWidth,
             sourceImgRef.current.naturalHeight
           );
-          projMesh.visible = showProjectionMesh;
+          projMesh.visible = true;
+          (projMesh.material as THREE.MeshBasicMaterial).opacity = showProjectionMesh ? projectionMeshOpacityPercent / 100 : 0;
           sceneRef.current.scene.add(projMesh);
           sceneRef.current.mesh = projMesh;
         }
@@ -1040,7 +1287,17 @@ export default function App() {
               setSourceImg(null);
               setDepthImg(null);
               setPoints([]);
+              setActiveTool('visibility');
+              setToolInteractionMode('brush');
+              setVisibilityBrushAction('hide');
+              setDepthAction('push');
+              setAddAction('single');
+              setAddAppearanceSource('image');
+              setIsPickingCloneSource(false);
+              setProjectionMeshOpacityPercent(20);
               setSelectionModeEnabled(false);
+              setHistory([]);
+              setRedoStack([]);
               clearSelectionState();
               setStatus('Ready');
               if (sceneRef.current?.points) {
@@ -1062,16 +1319,25 @@ export default function App() {
 
       <main className="flex-1 flex overflow-hidden">
         <ControlSidebar
+          activeTool={activeTool}
+          addAction={addAction}
+          addAppearanceSource={addAppearanceSource}
+          addedPointCount={addedPointCount}
+          cloneSourceIndex={cloneSourceIndex}
+          addPointSize={addPointSize}
           brushSettings={brushSettings}
           brushDepthPercent={brushDepthPercent}
           brushSoftnessPercent={brushSoftnessPercent}
           brushStrengthPercent={brushStrengthPercent}
+          depthAction={depthAction}
           depthImg={depthImg}
           handleAutoDepth={handleAutoDepth}
           handleFileChange={handleFileChange}
           handleGenerate={handleGenerate}
           handleGlbUpload={handleGlbUpload}
           handleRedo={handleRedo}
+          handleRemoveSelectedAddedPoints={handleRemoveSelectedAddedPoints}
+          handleClearAddedPoints={handleClearAddedPoints}
           handleUndo={handleUndo}
           hideSelectedPoints={hideSelectedPoints}
           historyLength={history.length}
@@ -1083,23 +1349,34 @@ export default function App() {
           restoreSelectedPoints={restoreSelectedPoints}
           saveCurrentSelection={saveCurrentSelection}
           savedSelections={savedSelections}
+          selectedAddedPointCount={selectedAddedPointCount}
           selectedPointCount={selectedPointCount}
           selectionModeEnabled={selectionModeEnabled}
+          setActiveTool={setActiveTool}
+          setAddAction={setAddAction}
+          setAddAppearanceSource={setAddAppearanceSource}
+          isPickingCloneSource={isPickingCloneSource}
+          setIsPickingCloneSource={setIsPickingCloneSource}
           setBrushSettings={setBrushSettings}
           setBrushDepthPercent={setBrushDepthPercent}
           setBrushSoftnessPercent={setBrushSoftnessPercent}
           setBrushStrengthPercent={setBrushStrengthPercent}
+          setDepthAction={setDepthAction}
           setParams={setParams}
           setSelectedPointIndices={setSelectedPointIndices}
-          setSelectionModeEnabled={setSelectionModeEnabled}
           setShowPointIndices={setShowPointIndices}
+          setToolInteractionMode={setToolInteractionMode}
+          setVisibilityBrushAction={setVisibilityBrushAction}
           showPointIndices={showPointIndices}
+          projectionMeshOpacityPercent={projectionMeshOpacityPercent}
+          setProjectionMeshOpacityPercent={setProjectionMeshOpacityPercent}
+          toolInteractionMode={toolInteractionMode}
           sourceImg={sourceImg}
           updateSavedSelectionName={updateSavedSelectionName}
           deleteSavedSelection={deleteSavedSelection}
+          visibilityBrushAction={visibilityBrushAction}
           maxPointSize={maxPointSize}
           setMaxPointSize={setMaxPointSize}
-          addPointSize={addPointSize}
           setAddPointSize={setAddPointSize}
           showProjectionMesh={showProjectionMesh}
           setShowProjectionMesh={setShowProjectionMesh}

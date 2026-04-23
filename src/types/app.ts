@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 // @ts-ignore
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import type { PointData } from '../processing/pointSampler';
 
 export type SavedSelection = {
   id: string;
@@ -18,9 +19,21 @@ export type SelectionDragState = {
 };
 
 export type HistorySnapshot = {
-  positions: Float32Array;
-  visibility: Float32Array;
+  points: PointData[];
+  selectedPointIndices: number[];
 };
+
+export type ActiveTool = 'visibility' | 'depth' | 'add';
+
+export type ToolInteractionMode = 'arrow' | 'brush';
+
+export type VisibilityBrushAction = 'hide' | 'reveal' | 'select';
+
+export type DepthAction = 'push' | 'pull';
+
+export type AddAction = 'single' | 'brush';
+
+export type AddAppearanceSource = 'image' | 'clone-selected';
 
 export type SceneRefs = {
   scene: THREE.Scene;

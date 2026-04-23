@@ -14,6 +14,7 @@ export interface PointData {
   b: number;
   size: number;
   visibility: number; // 0 to 1
+  isAdded?: boolean;
 }
 
 export interface SamplingParams {
@@ -426,6 +427,7 @@ export function buildProjectionMesh(
   const vertCount = cols * rows;
 
   const positions = new Float32Array(vertCount * 3);
+  const uvs = new Float32Array(vertCount * 2);
   const indices: number[] = [];
 
   for (let row = 0; row < rows; row++) {
@@ -443,6 +445,8 @@ export function buildProjectionMesh(
       positions[i * 3]     = (px - sourceWidth / 2) * params.xyScale;
       positions[i * 3 + 1] = -(py - sourceHeight / 2) * params.xyScale;
       positions[i * 3 + 2] = depthVal * params.depthScale;
+      uvs[i * 2] = sourceWidth > 1 ? px / (sourceWidth - 1) : 0;
+      uvs[i * 2 + 1] = sourceHeight > 1 ? 1 - (py / (sourceHeight - 1)) : 0;
 
       if (col < cols - 1 && row < rows - 1) {
         const a = i;
@@ -456,6 +460,7 @@ export function buildProjectionMesh(
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geo.setIndex(indices);
 
   const mat = new THREE.MeshBasicMaterial({
@@ -469,7 +474,7 @@ export function buildProjectionMesh(
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'projectionSurface';
-  // Invisible by default; toggle for debug view
-  mesh.visible = false;
+  // Keep the mesh raycastable at all times; the app controls visibility via opacity.
+  mesh.visible = true;
   return mesh;
 }

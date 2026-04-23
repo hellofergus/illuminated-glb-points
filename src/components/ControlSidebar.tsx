@@ -2,6 +2,7 @@ import React from 'react';
 import { Upload, Box, Eraser, Paintbrush, Undo, Redo, Layers } from 'lucide-react';
 import { SamplingParams } from '../processing/pointSampler';
 import { BrushMode } from '../processing/pointInteraction';
+import type { ActiveTool, AddAction, AddAppearanceSource, DepthAction, ToolInteractionMode, VisibilityBrushAction } from '../types/app';
 
 type SavedSelection = {
   id: string;
@@ -18,16 +19,24 @@ type BrushSettings = {
 };
 
 type ControlSidebarProps = {
+  activeTool: ActiveTool;
+  addAction: AddAction;
+  addAppearanceSource: AddAppearanceSource;
+  addedPointCount: number;
+  cloneSourceIndex: number | null;
   brushSettings: BrushSettings;
   brushDepthPercent: number;
   brushSoftnessPercent: number;
   brushStrengthPercent: number;
+  depthAction: DepthAction;
   depthImg: string | null;
   handleAutoDepth: () => void;
   handleFileChange: (e: React.ChangeEvent<HTMLInputElement>, type: 'source' | 'depth') => void;
   handleGenerate: () => void;
   handleGlbUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleRedo: () => void;
+  handleRemoveSelectedAddedPoints: () => void;
+  handleClearAddedPoints: () => void;
   handleUndo: () => void;
   hideSelectedPoints: () => void;
   historyLength: number;
@@ -39,20 +48,32 @@ type ControlSidebarProps = {
   restoreSelectedPoints: () => void;
   saveCurrentSelection: () => void;
   savedSelections: SavedSelection[];
+  isPickingCloneSource: boolean;
+  selectedAddedPointCount: number;
   selectedPointCount: number;
   selectionModeEnabled: boolean;
+  setActiveTool: React.Dispatch<React.SetStateAction<ActiveTool>>;
+  setAddAction: React.Dispatch<React.SetStateAction<AddAction>>;
+  setAddAppearanceSource: React.Dispatch<React.SetStateAction<AddAppearanceSource>>;
+  setIsPickingCloneSource: (value: boolean) => void;
   setBrushSettings: React.Dispatch<React.SetStateAction<BrushSettings>>;
   setBrushDepthPercent: (percent: number) => void;
   setBrushSoftnessPercent: (percent: number) => void;
   setBrushStrengthPercent: (percent: number) => void;
+  setDepthAction: React.Dispatch<React.SetStateAction<DepthAction>>;
   setParams: React.Dispatch<React.SetStateAction<SamplingParams>>;
   setSelectedPointIndices: React.Dispatch<React.SetStateAction<number[]>>;
-  setSelectionModeEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setShowPointIndices: React.Dispatch<React.SetStateAction<boolean>>;
+  setToolInteractionMode: React.Dispatch<React.SetStateAction<ToolInteractionMode>>;
+  setVisibilityBrushAction: React.Dispatch<React.SetStateAction<VisibilityBrushAction>>;
   showPointIndices: boolean;
+  projectionMeshOpacityPercent: number;
+  setProjectionMeshOpacityPercent: (value: number) => void;
+  toolInteractionMode: ToolInteractionMode;
   sourceImg: string | null;
   updateSavedSelectionName: (selectionId: string, name: string) => void;
   deleteSavedSelection: (selectionId: string) => void;
+  visibilityBrushAction: VisibilityBrushAction;
   maxPointSize: number;
   setMaxPointSize: (value: number) => void;
   addPointSize: number;
@@ -62,16 +83,24 @@ type ControlSidebarProps = {
 };
 
 export function ControlSidebar({
+  activeTool,
+  addAction,
+  addAppearanceSource,
+  addedPointCount,
+  cloneSourceIndex,
   brushSettings,
   brushDepthPercent,
   brushSoftnessPercent,
   brushStrengthPercent,
+  depthAction,
   depthImg,
   handleAutoDepth,
   handleFileChange,
   handleGenerate,
   handleGlbUpload,
   handleRedo,
+  handleRemoveSelectedAddedPoints,
+  handleClearAddedPoints,
   handleUndo,
   hideSelectedPoints,
   historyLength,
@@ -83,20 +112,32 @@ export function ControlSidebar({
   restoreSelectedPoints,
   saveCurrentSelection,
   savedSelections,
+  isPickingCloneSource,
+  selectedAddedPointCount,
   selectedPointCount,
   selectionModeEnabled,
+  setActiveTool,
+  setAddAction,
+  setAddAppearanceSource,
+  setIsPickingCloneSource,
   setBrushSettings,
   setBrushDepthPercent,
   setBrushSoftnessPercent,
   setBrushStrengthPercent,
+  setDepthAction,
   setParams,
   setSelectedPointIndices,
-  setSelectionModeEnabled,
   setShowPointIndices,
+  setToolInteractionMode,
+  setVisibilityBrushAction,
   showPointIndices,
+  projectionMeshOpacityPercent,
+  setProjectionMeshOpacityPercent,
+  toolInteractionMode,
   sourceImg,
   updateSavedSelectionName,
   deleteSavedSelection,
+  visibilityBrushAction,
   maxPointSize,
   setMaxPointSize,
   addPointSize,
@@ -268,256 +309,426 @@ export function ControlSidebar({
       </section>
 
       <section className="space-y-4">
-        <div className="mono-label text-tech-accent uppercase flex justify-between items-center">
-          <span>03 // Arrow Selection</span>
-          <button
-            onClick={() => {
-              const nextEnabled = !selectionModeEnabled;
-              setSelectionModeEnabled(nextEnabled);
-              if (nextEnabled) {
-                setBrushSettings((prev) => ({ ...prev, enabled: false }));
-              }
-            }}
-            className={`text-[9px] px-2 py-0.5 border rounded transition-all ${selectionModeEnabled ? 'bg-tech-accent text-black border-tech-accent' : 'border-tech-subtle-border opacity-50'}`}
-          >
-            {selectionModeEnabled ? '[ ACTIVE ]' : '[ INACTIVE ]'}
-          </button>
-        </div>
+        <div className="mono-label text-tech-accent uppercase">03 // Tool Stack</div>
 
         <div className="space-y-3 p-3 bg-tech-header/50 border border-tech-border rounded">
-          <div className="flex items-center justify-between border-b border-tech-border/30 pb-2">
-            <div>
-              <div className="mono-value text-[10px] text-tech-accent font-bold">{selectedPointCount} SELECTED</div>
-              <div className="text-[8px] opacity-40 font-mono uppercase">Click selects, drag draws box, Shift adds, Ctrl removes</div>
-            </div>
+          <div className="grid grid-cols-3 gap-2">
             <button
-              onClick={() => setSelectedPointIndices([])}
-              disabled={selectedPointCount === 0}
-              className="px-2 py-1 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+              onClick={() => setActiveTool('visibility')}
+              className={`py-2 border rounded text-[10px] uppercase font-mono transition-all ${activeTool === 'visibility' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
             >
-              Clear
+              Visibility
+            </button>
+            <button
+              onClick={() => { setActiveTool('depth'); setToolInteractionMode('brush'); }}
+              className={`py-2 border rounded text-[10px] uppercase font-mono transition-all ${activeTool === 'depth' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+            >
+              Depth
+            </button>
+            <button
+              onClick={() => {
+                setActiveTool('add');
+                setToolInteractionMode(addAction === 'single' ? 'arrow' : 'brush');
+              }}
+              className={`py-2 border rounded text-[10px] uppercase font-mono transition-all ${activeTool === 'add' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+            >
+              Add Points
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={hideSelectedPoints}
-              disabled={selectedPointCount === 0}
-              className="py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
-            >
-              Hide Selected
-            </button>
-            <button
-              onClick={restoreSelectedPoints}
-              disabled={selectedPointCount === 0}
-              className="py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
-            >
-              Bring Back
-            </button>
-            <button
-              onClick={saveCurrentSelection}
-              disabled={selectedPointCount === 0}
-              className="col-span-2 py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
-            >
-              Save Current Selection
-            </button>
-          </div>
-
-          <div className="space-y-2 border-t border-tech-border/30 pt-3">
-            <div className="flex items-center justify-between">
-              <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Stored Selections</span>
-              <span className="mono-value text-[9px] text-tech-accent">{savedSelections.length}</span>
-            </div>
-
-            {savedSelections.length === 0 ? (
-              <div className="text-[8px] opacity-30 font-mono uppercase">No saved selections yet</div>
-            ) : (
-              <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-hide pr-1">
-                {savedSelections.map((selection) => (
-                  <div
-                    key={selection.id}
-                    onDoubleClick={() => restoreSavedSelection(selection.indices)}
-                    className="space-y-2 border border-tech-border/60 rounded px-2 py-2 bg-tech-bg/30"
-                  >
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={selection.name}
-                        onChange={(e) => updateSavedSelectionName(selection.id, e.target.value)}
-                        className="flex-1 bg-transparent border border-tech-border/50 rounded px-2 py-1 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
-                      />
-                      <button
-                        onClick={() => deleteSavedSelection(selection.id)}
-                        className="px-2 py-1 border border-tech-border rounded text-[8px] uppercase font-mono hover:border-red-500 hover:text-red-400 transition-all"
-                      >
-                        X
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between text-[8px] font-mono uppercase opacity-50">
-                      <span>{selection.indices.length} points</span>
-                      <span>Double click to restore</span>
-                    </div>
-                  </div>
-                ))}
+          {activeTool === 'visibility' && (
+            <div className="space-y-2 border-t border-tech-border/30 pt-3">
+              <div className="flex items-center justify-between">
+                <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Interaction</span>
+                <span className="mono-value text-[9px] text-tech-accent">{toolInteractionMode === 'arrow' ? 'ARROW' : 'BRUSH'}</span>
               </div>
-            )}
-          </div>
-
-          <div className="text-[8px] opacity-40 font-mono italic">Arrow tool uses click or drag-box selection. Backspace hides the current selection without deleting any points.</div>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent uppercase flex justify-between items-center">
-          <span>04 // Brush Tool</span>
-          <button
-            onClick={() => {
-              const nextEnabled = !brushSettings.enabled;
-              setBrushSettings({ ...brushSettings, enabled: nextEnabled });
-              if (nextEnabled) {
-                setSelectionModeEnabled(false);
-              }
-            }}
-            className={`text-[9px] px-2 py-0.5 border rounded transition-all ${brushSettings.enabled ? 'bg-tech-accent text-black border-tech-accent' : 'border-tech-subtle-border opacity-50'}`}
-          >
-            {brushSettings.enabled ? '[ ACTIVE ]' : '[ INACTIVE ]'}
-          </button>
-        </div>
-
-        {brushSettings.enabled && (
-          <div className="space-y-4 p-3 bg-tech-header/50 border border-tech-border rounded animate-in fade-in slide-in-from-top-2 duration-300">
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'hide' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'hide' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                <Eraser className="w-3 h-3" /> Hide
-              </button>
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'reveal' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'reveal' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                <Paintbrush className="w-3 h-3" /> Reveal
-              </button>
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'push' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'push' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                Depth Out
-              </button>
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'pull' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'pull' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                Depth In
-              </button>
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'paint' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'paint' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                <Paintbrush className="w-3 h-3" /> Paint
-              </button>
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'stamp' })}
-                className={`flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'stamp' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                + Stamp
-              </button>
-              <button
-                onClick={() => setBrushSettings({ ...brushSettings, mode: 'select' })}
-                className={`col-span-2 flex-1 py-1.5 flex items-center justify-center gap-2 border rounded text-[10px] uppercase font-mono transition-all ${brushSettings.mode === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-40'}`}
-              >
-                <Layers className="w-3 h-3" /> Select
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setToolInteractionMode('arrow')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${toolInteractionMode === 'arrow' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Arrow
+                </button>
+                <button
+                  onClick={() => setToolInteractionMode('brush')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${toolInteractionMode === 'brush' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Brush
+                </button>
+              </div>
             </div>
+          )}
 
-            <div className="flex gap-2 border-t border-tech-border/30 pt-3">
-              <button
-                onClick={handleUndo}
-                disabled={historyLength === 0}
-                className="flex-1 py-1 flex items-center justify-center gap-2 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
-              >
-                <Undo className="w-3 h-3" /> Undo
-              </button>
-              <button
-                onClick={handleRedo}
-                disabled={redoStackLength === 0}
-                className="flex-1 py-1 flex items-center justify-center gap-2 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
-              >
-                <Redo className="w-3 h-3" /> Redo
-              </button>
-            </div>
-
-            <div>
-              <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
-              <input
-                type="range" min="1" max="500" step="1"
-                value={brushSettings.size}
-                onChange={(e) => setBrushSettings({ ...brushSettings, size: parseInt(e.target.value) })}
-                className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Strength</span><span>{brushStrengthPercent}%</span></div>
-              <input
-                type="range" min="1" max="100" step="1"
-                value={brushStrengthPercent}
-                onChange={(e) => setBrushStrengthPercent(parseInt(e.target.value))}
-                className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Depth Amount</span><span>{brushDepthPercent}% SCALE</span></div>
-              <input
-                type="range" min="1" max="100" step="1"
-                value={brushDepthPercent}
-                onChange={(e) => setBrushDepthPercent(parseInt(e.target.value))}
-                className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Softness</span><span>{brushSoftnessPercent}%</span></div>
-              <input
-                type="range" min="0" max="100" step="1"
-                value={brushSoftnessPercent}
-                onChange={(e) => setBrushSoftnessPercent(parseInt(e.target.value))}
-                className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            {(brushSettings.mode === 'paint' || brushSettings.mode === 'stamp') && (
-              <div className="space-y-3 pt-3 border-t border-tech-border/30 animate-in fade-in slide-in-from-top-1 duration-200">
-                <div>
-                  <div className="flex justify-between mono-value mb-1 font-mono text-[9px]">
-                    <span className="opacity-50">New Point Size</span>
-                    <span>{addPointSize.toFixed(2)}</span>
+          {activeTool === 'visibility' && (
+            <>
+              {toolInteractionMode === 'brush' && (
+                <div className="space-y-3 border-t border-tech-border/30 pt-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      onClick={() => setVisibilityBrushAction('hide')}
+                      className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${visibilityBrushAction === 'hide' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                    >
+                      Hide
+                    </button>
+                    <button
+                      onClick={() => setVisibilityBrushAction('reveal')}
+                      className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${visibilityBrushAction === 'reveal' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                    >
+                      Reveal
+                    </button>
+                    <button
+                      onClick={() => setVisibilityBrushAction('select')}
+                      className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${visibilityBrushAction === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                    >
+                      Select
+                    </button>
                   </div>
-                  <input
-                    type="range" min="0.1" max="5" step="0.05"
-                    value={addPointSize}
-                    onChange={(e) => setAddPointSize(parseFloat(e.target.value))}
-                    className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
-                  />
+
+                  <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                    <input
+                      type="range" min="1" max="500" step="1"
+                      value={brushSettings.size}
+                      onChange={(e) => setBrushSettings({ ...brushSettings, size: parseInt(e.target.value) })}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Strength</span><span>{brushStrengthPercent}%</span></div>
+                    <input
+                      type="range" min="1" max="100" step="1"
+                      value={brushStrengthPercent}
+                      onChange={(e) => setBrushStrengthPercent(parseInt(e.target.value))}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Softness</span><span>{brushSoftnessPercent}%</span></div>
+                    <input
+                      type="range" min="0" max="100" step="1"
+                      value={brushSoftnessPercent}
+                      onChange={(e) => setBrushSoftnessPercent(parseInt(e.target.value))}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
                 </div>
-                <div className="flex items-center justify-between py-1">
-                  <span className="mono-value opacity-50 font-mono text-[9px]">Show Surface Mesh</span>
+              )}
+
+              <div className="space-y-3 border-t border-tech-border/30 pt-3">
+                <div className="flex items-center justify-between border-b border-tech-border/30 pb-2">
+                  <div>
+                    <div className="mono-value text-[10px] text-tech-accent font-bold">{selectedPointCount} SELECTED</div>
+                    <div className="text-[8px] opacity-40 font-mono uppercase">
+                      {toolInteractionMode === 'arrow'
+                        ? 'Click selects, drag draws box, Shift adds, Ctrl removes'
+                        : 'Brush select accumulates points inside the current brush area'}
+                    </div>
+                  </div>
                   <button
-                    onClick={() => setShowProjectionMesh(!showProjectionMesh)}
-                    className={`w-8 h-4 border border-tech-subtle-border rounded-full transition-colors relative ${showProjectionMesh ? 'bg-tech-accent' : 'bg-tech-border'}`}
+                    onClick={() => setSelectedPointIndices([])}
+                    disabled={selectedPointCount === 0}
+                    className="px-2 py-1 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
                   >
-                    <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${showProjectionMesh ? 'right-1' : 'left-1'}`} />
+                    Clear
                   </button>
                 </div>
-                <div className="text-[8px] opacity-40 font-mono italic">Paint scatters new points onto the depth-anchored surface. Stamp places one precise point per click. Generate a point cloud first to enable the surface.</div>
-              </div>
-            )}
 
-            <div className="text-[8px] opacity-40 font-mono italic">Brush can hide, reveal, move depth out or in, add to selection, or paint/stamp new points. Depth Amount is relative to the current depth scale. Shortcuts: [ and ] adjust radius, , and . adjust strength, 1-0 set softness from 10% to 100%, Ctrl+Z undo, Ctrl+Shift+Z redo.</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={hideSelectedPoints}
+                    disabled={selectedPointCount === 0}
+                    className="py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                  >
+                    Hide Selected
+                  </button>
+                  <button
+                    onClick={restoreSelectedPoints}
+                    disabled={selectedPointCount === 0}
+                    className="py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                  >
+                    Bring Back
+                  </button>
+                  <button
+                    onClick={saveCurrentSelection}
+                    disabled={selectedPointCount === 0}
+                    className="col-span-2 py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+                  >
+                    Save Current Selection
+                  </button>
+                </div>
+
+                <div className="space-y-2 border-t border-tech-border/30 pt-3">
+                  <div className="flex items-center justify-between">
+                    <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Stored Selections</span>
+                    <span className="mono-value text-[9px] text-tech-accent">{savedSelections.length}</span>
+                  </div>
+
+                  {savedSelections.length === 0 ? (
+                    <div className="text-[8px] opacity-30 font-mono uppercase">No saved selections yet</div>
+                  ) : (
+                    <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-hide pr-1">
+                      {savedSelections.map((selection) => (
+                        <div
+                          key={selection.id}
+                          onDoubleClick={() => restoreSavedSelection(selection.indices)}
+                          className="space-y-2 border border-tech-border/60 rounded px-2 py-2 bg-tech-bg/30"
+                        >
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={selection.name}
+                              onChange={(e) => updateSavedSelectionName(selection.id, e.target.value)}
+                              className="flex-1 bg-transparent border border-tech-border/50 rounded px-2 py-1 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
+                            />
+                            <button
+                              onClick={() => deleteSavedSelection(selection.id)}
+                              className="px-2 py-1 border border-tech-border rounded text-[8px] uppercase font-mono hover:border-red-500 hover:text-red-400 transition-all"
+                            >
+                              X
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between text-[8px] font-mono uppercase opacity-50">
+                            <span>{selection.indices.length} points</span>
+                            <span>Double click to restore</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-[8px] opacity-40 font-mono italic">Visibility is now one tool: use Arrow for precise stored selections or Brush for gestural hide, reveal, and brush-select.</div>
+              </div>
+            </>
+          )}
+
+          {activeTool === 'depth' && (
+            <div className="space-y-3 border-t border-tech-border/30 pt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setDepthAction('push')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${depthAction === 'push' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Depth Out
+                </button>
+                <button
+                  onClick={() => setDepthAction('pull')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${depthAction === 'pull' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Depth In
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                <input
+                  type="range" min="1" max="500" step="1"
+                  value={brushSettings.size}
+                  onChange={(e) => setBrushSettings({ ...brushSettings, size: parseInt(e.target.value) })}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Strength</span><span>{brushStrengthPercent}%</span></div>
+                <input
+                  type="range" min="1" max="100" step="1"
+                  value={brushStrengthPercent}
+                  onChange={(e) => setBrushStrengthPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Depth Amount</span><span>{brushDepthPercent}% SCALE</span></div>
+                <input
+                  type="range" min="1" max="100" step="1"
+                  value={brushDepthPercent}
+                  onChange={(e) => setBrushDepthPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Softness</span><span>{brushSoftnessPercent}%</span></div>
+                <input
+                  type="range" min="0" max="100" step="1"
+                  value={brushSoftnessPercent}
+                  onChange={(e) => setBrushSoftnessPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div className="text-[8px] opacity-40 font-mono italic">Depth painting is brush-only. Use it to push or pull point positions in Z without changing visibility.</div>
+            </div>
+          )}
+
+          {activeTool === 'add' && (
+            <div className="space-y-3 border-t border-tech-border/30 pt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => { setToolInteractionMode('arrow'); setAddAction('single'); }}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${toolInteractionMode === 'arrow' && addAction === 'single' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  One Point
+                </button>
+                <button
+                  onClick={() => { setToolInteractionMode('brush'); setAddAction('brush'); }}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${toolInteractionMode === 'brush' && addAction === 'brush' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Paint Points
+                </button>
+              </div>
+
+              <div className="space-y-2 border-t border-tech-border/30 pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Appearance Source</span>
+                  <span className="mono-value text-[9px] text-tech-accent">{addAppearanceSource === 'clone-selected' ? 'CLONED POINT' : 'SOURCE IMAGE'}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      setAddAppearanceSource('image');
+                      setIsPickingCloneSource(false);
+                    }}
+                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${addAppearanceSource === 'image' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                  >
+                    Image Color
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAddAppearanceSource('clone-selected');
+                      setIsPickingCloneSource(true);
+                    }}
+                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${addAppearanceSource === 'clone-selected' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                  >
+                    Clone Selected
+                  </button>
+                </div>
+                {addAppearanceSource === 'clone-selected' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between rounded border border-tech-border/40 px-2 py-1.5">
+                      <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Source Point</span>
+                      <span className="mono-value text-[9px] text-tech-accent font-mono">{cloneSourceIndex !== null ? `#${cloneSourceIndex}` : 'NONE LOCKED'}</span>
+                    </div>
+                    <button
+                      onClick={() => setIsPickingCloneSource(!isPickingCloneSource)}
+                      className={`w-full py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${isPickingCloneSource ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-70 hover:border-tech-accent/60'}`}
+                    >
+                      {isPickingCloneSource ? 'Click Viewport To Pick' : 'Pick Source Point'}
+                    </button>
+                    <div className="text-[8px] opacity-40 font-mono italic">Lock one visible point as the style source, then stamp or paint new points with its size and color.</div>
+                  </div>
+                )}
+              </div>
+
+              {toolInteractionMode === 'brush' && (
+                <>
+                  <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                    <input
+                      type="range" min="1" max="500" step="1"
+                      value={brushSettings.size}
+                      onChange={(e) => setBrushSettings({ ...brushSettings, size: parseInt(e.target.value) })}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Paint Density</span><span>{brushStrengthPercent}%</span></div>
+                    <input
+                      type="range" min="1" max="100" step="1"
+                      value={brushStrengthPercent}
+                      onChange={(e) => setBrushStrengthPercent(parseInt(e.target.value))}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]">
+                  <span className="opacity-50">New Point Size</span>
+                  <span>{addPointSize.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range" min="0.1" max="5" step="0.05"
+                  value={addPointSize}
+                  onChange={(e) => setAddPointSize(parseFloat(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div className="flex items-center justify-between py-1">
+                <span className="mono-value opacity-50 font-mono text-[9px]">Show Surface Mesh</span>
+                <button
+                  onClick={() => setShowProjectionMesh(!showProjectionMesh)}
+                  className={`w-8 h-4 border border-tech-subtle-border rounded-full transition-colors relative ${showProjectionMesh ? 'bg-tech-accent' : 'bg-tech-border'}`}
+                >
+                  <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${showProjectionMesh ? 'right-1' : 'left-1'}`} />
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]">
+                  <span className="opacity-50">Surface Transparency</span>
+                  <span>{projectionMeshOpacityPercent}%</span>
+                </div>
+                <input
+                  type="range" min="0" max="100" step="1"
+                  value={projectionMeshOpacityPercent}
+                  onChange={(e) => setProjectionMeshOpacityPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-2 border-t border-tech-border/30 pt-3">
+                <div className="flex items-center justify-between rounded border border-tech-border/40 px-2 py-1.5">
+                  <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Added Layer</span>
+                  <span className="mono-value text-[9px] text-tech-accent font-mono">{addedPointCount} PTS</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={handleRemoveSelectedAddedPoints}
+                    disabled={selectedAddedPointCount === 0}
+                    className="py-1.5 border rounded text-[10px] uppercase font-mono transition-all border-tech-border hover:border-tech-accent disabled:opacity-30 disabled:hover:border-tech-border"
+                  >
+                    Remove Selected
+                  </button>
+                  <button
+                    onClick={handleClearAddedPoints}
+                    disabled={addedPointCount === 0}
+                    className="py-1.5 border rounded text-[10px] uppercase font-mono transition-all border-tech-border hover:border-tech-accent disabled:opacity-30 disabled:hover:border-tech-border"
+                  >
+                    Clear Added
+                  </button>
+                </div>
+                <div className="text-[8px] opacity-40 font-mono italic">These actions only affect hand-added points, leaving the generated base cloud untouched.</div>
+              </div>
+
+              <div className="text-[8px] opacity-40 font-mono italic">Add Points supports either one-point precision or brush painting. Use Clone Selected to inherit size and color from one selected source point, or Image Color to sample from the illustration.</div>
+            </div>
+          )}
+
+          <div className="flex gap-2 border-t border-tech-border/30 pt-3">
+            <button
+              onClick={handleUndo}
+              disabled={historyLength === 0}
+              className="flex-1 py-1 flex items-center justify-center gap-2 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+            >
+              <Undo className="w-3 h-3" /> Undo
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={redoStackLength === 0}
+              className="flex-1 py-1 flex items-center justify-center gap-2 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
+            >
+              <Redo className="w-3 h-3" /> Redo
+            </button>
           </div>
-        )}
+        </div>
       </section>
 
       <section className="space-y-4">

@@ -12,6 +12,30 @@
 				"development"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "vite build dev",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"vite",
+				"build",
+				"--mode",
+				"development"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "vite build dev",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"vite",
+				"build",
+				"--mode",
+				"development"
+			],
+			"isBackground": false
 		}
 	]
 }
