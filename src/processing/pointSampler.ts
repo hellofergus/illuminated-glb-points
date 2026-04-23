@@ -11,6 +11,8 @@ export interface PointData {
   z: number;
   u?: number;
   v?: number;
+  depthSample?: number;
+  zOffset?: number;
   r: number;
   g: number;
   b: number;
@@ -358,6 +360,8 @@ export async function processImages(
         z: averageDepth * params.depthScale,
         u,
         v,
+        depthSample: getDepthAt(targetX, targetY),
+        zOffset: 0,
         r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
         g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
         b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -510,6 +514,8 @@ export async function processImages(
         y: -((weightedY / totalWeight) - height / 2) * params.xyScale,
         z: (weightedDepth / totalWeight) * params.depthScale,
         ...getNormalizedUv(weightedX / totalWeight, weightedY / totalWeight),
+        depthSample: getDepthAt(weightedX / totalWeight, weightedY / totalWeight),
+        zOffset: 0,
         r: weightedR / totalWeight,
         g: weightedG / totalWeight,
         b: weightedB / totalWeight,
@@ -544,6 +550,8 @@ export async function processImages(
               z: dV * params.depthScale,
               u,
               v,
+              depthSample: getDepthAt(targetX, targetY),
+              zOffset: 0,
               r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
               g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
               b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -626,6 +634,8 @@ export async function processImages(
               z: depthVal * params.depthScale,
               u,
               v,
+              depthSample: getDepthAt(targetX, targetY),
+              zOffset: 0,
               r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
               g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
               b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -665,6 +675,8 @@ export async function processImages(
               z: dV * params.depthScale,
               u,
               v,
+              depthSample: getDepthAt(targetX, targetY),
+              zOffset: 0,
               r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
               g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
               b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -695,6 +707,8 @@ export async function processImages(
         z: depthVal * params.depthScale,
         u,
         v,
+        depthSample: getDepthAt(targetX, targetY),
+        zOffset: 0,
         r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
         g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
         b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -747,6 +761,8 @@ export async function exportToGLB(points: PointData[]): Promise<Blob> {
   const positions = new Float32Array(visiblePoints.length * 3);
   const colors = new Float32Array(visiblePoints.length * 3);
   const uvs = new Float32Array(visiblePoints.length * 2);
+  const depthSamples = new Float32Array(visiblePoints.length);
+  const zOffsets = new Float32Array(visiblePoints.length);
 
   visiblePoints.forEach((p, i) => {
     positions[i * 3] = p.x;
@@ -757,11 +773,15 @@ export async function exportToGLB(points: PointData[]): Promise<Blob> {
     colors[i * 3 + 2] = p.b;
     uvs[i * 2] = p.u ?? 0;
     uvs[i * 2 + 1] = p.v ?? 0;
+    depthSamples[i] = p.depthSample ?? 0.5;
+    zOffsets[i] = p.zOffset ?? 0;
   });
 
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geometry.setAttribute('_depth', new THREE.BufferAttribute(depthSamples, 1));
+  geometry.setAttribute('_zOffset', new THREE.BufferAttribute(zOffsets, 1));
 
   // Export sizes as a custom attribute
   const sizes = new Float32Array(visiblePoints.length);

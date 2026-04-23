@@ -174,6 +174,7 @@ export default function App() {
   useEffect(() => { pointsRef.current = points; }, [points]);
 
   const sourcePixelDataRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+  const depthPixelDataRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
   const addAppearanceSourceRef = useRef(addAppearanceSource);
   useEffect(() => { addAppearanceSourceRef.current = addAppearanceSource; }, [addAppearanceSource]);
   const isPickingCloneSourceRef = useRef(isPickingCloneSource);
@@ -457,6 +458,70 @@ export default function App() {
     return syncedPoints;
   };
 
+  const clampDepthSample = (value: number) => Math.max(0, Math.min(1, value));
+
+  const getStoredDepthSample = (point: PointData, currentParams: SamplingParams) => {
+    if (typeof point.depthSample === 'number') {
+      return clampDepthSample(point.depthSample);
+    }
+
+    if (currentParams.depthScale !== 0) {
+      return clampDepthSample(point.z / currentParams.depthScale);
+    }
+
+    return 0.5;
+  };
+
+  const sampleDepthFromUv = (u?: number, v?: number) => {
+    const depthPixels = depthPixelDataRef.current;
+    if (!depthPixels || typeof u !== 'number' || typeof v !== 'number') {
+      return null;
+    }
+
+    const clampedU = Math.max(0, Math.min(1, u));
+    const clampedV = Math.max(0, Math.min(1, v));
+    const px = Math.round(clampedU * (depthPixels.width - 1));
+    const py = Math.round((1 - clampedV) * (depthPixels.height - 1));
+    const pixelIndex = (py * depthPixels.width + px) * 4;
+    const normalizedValue = depthPixels.data[pixelIndex] / 255;
+
+    if (paramsRef.current.depthColorSpace === 'srgb-linear') {
+      return normalizedValue <= 0.04045
+        ? normalizedValue / 12.92
+        : Math.pow((normalizedValue + 0.055) / 1.055, 2.4);
+    }
+
+    return normalizedValue;
+  };
+
+  const getActiveDepthSample = (point: PointData, currentParams: SamplingParams) => {
+    const sampledDepth = sampleDepthFromUv(point.u, point.v);
+    if (sampledDepth !== null) {
+      return sampledDepth;
+    }
+
+    return getStoredDepthSample(point, currentParams);
+  };
+
+  const getRenderedPointZ = (point: PointData, currentParams: SamplingParams) => {
+    const depthSample = getActiveDepthSample(point, currentParams);
+    const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
+    return (adjustedDepth * currentParams.depthScale) + (point.zOffset ?? 0);
+  };
+
+  const materializePointsForDepth = (targetPoints: PointData[], currentParams: SamplingParams) => {
+    return targetPoints.map((point) => {
+      const depthSample = getActiveDepthSample(point, currentParams);
+
+      return {
+        ...point,
+        depthSample,
+        zOffset: point.zOffset ?? 0,
+        z: ((currentParams.invertDepth ? 1 - depthSample : depthSample) * currentParams.depthScale) + (point.zOffset ?? 0)
+      };
+    });
+  };
+
   const getCameraSnapshot = () => {
     if (!sceneRef.current) return undefined;
 
@@ -615,13 +680,14 @@ export default function App() {
       (index) => index >= 0 && index < restoredPoints.length
     );
 
-    pointsRef.current = restoredPoints;
+    const renderedPoints = materializePointsForDepth(restoredPoints, restoredSession.params);
+    pointsRef.current = renderedPoints;
     selectedPointIndicesRef.current = validSelectedIndices;
-    setPoints(restoredPoints);
+    setPoints(renderedPoints);
     setSelectedPointIndices(validSelectedIndices);
     setStats({
       ...restoredSession.stats,
-      pointCount: restoredPoints.length
+      pointCount: renderedPoints.length
     });
 
     if (restoredSession.camera && sceneRef.current) {
@@ -632,9 +698,9 @@ export default function App() {
       controls.update();
     }
 
-    if (restoredPoints.length > 0) {
+    if (renderedPoints.length > 0) {
       renderPoints(
-        restoredPoints,
+        renderedPoints,
         restoredSession.params.pointSizeMultiplier,
         restoredSession.maxPointSize
       );
@@ -667,7 +733,7 @@ export default function App() {
     }
 
     setHasSavedSession(true);
-    return restoredPoints;
+    return renderedPoints;
   };
 
   const handleSaveSession = () => {
@@ -1190,6 +1256,14 @@ export default function App() {
           return getUvFromWorldPos(worldPos);
         };
 
+        const resolveDepthSample = (worldPos: THREE.Vector3, uv?: THREE.Vector2 | null) => {
+          const resolvedUv = uv
+            ? { u: Math.max(0, Math.min(1, uv.x)), v: Math.max(0, Math.min(1, uv.y)) }
+            : getUvFromWorldPos(worldPos);
+
+          return sampleDepthFromUv(resolvedUv.u, resolvedUv.v) ?? 0.5;
+        };
+
         const newPoints: PointData[] = [];
 
         if (settings.mode === 'stamp') {
@@ -1200,7 +1274,8 @@ export default function App() {
             const hp = hits[0].point;
             const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
             const { u, v } = resolvePointUv(hp, hits[0].uv);
-            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, r, g, b, size, visibility: 1.0 });
+            const depthSample = resolveDepthSample(hp, hits[0].uv);
+            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, depthSample, zOffset: 0, r, g, b, size, visibility: 1.0 });
           }
         } else {
           // Paint: scatter N points within brush radius
@@ -1219,7 +1294,8 @@ export default function App() {
               const hp = hits[0].point;
               const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
               const { u, v } = resolvePointUv(hp, hits[0].uv);
-              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, r, g, b, size, visibility: 1.0 });
+              const depthSample = resolveDepthSample(hp, hits[0].uv);
+              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, depthSample, zOffset: 0, r, g, b, size, visibility: 1.0 });
             }
           }
         }
@@ -1295,7 +1371,14 @@ export default function App() {
             affectedPointCount += 1;
           } else if (settings.mode === 'push' || settings.mode === 'pull') {
             const depthDirection = settings.mode === 'push' ? 1 : -1;
-            const nextZ = positionAttr.getZ(i) + (depthDelta * brushInfluence * depthDirection);
+            const point = pointsRef.current[i];
+            if (!point) {
+              continue;
+            }
+
+            point.zOffset = (point.zOffset ?? 0) + (depthDelta * brushInfluence * depthDirection);
+            const nextZ = getRenderedPointZ(point, paramsRef.current);
+            point.z = nextZ;
             positionAttr.setZ(i, nextZ);
             if (pointIndexLabels?.children[i]) {
               pointIndexLabels.children[i].position.z = nextZ;
@@ -1576,6 +1659,54 @@ export default function App() {
     else img.addEventListener('load', capture, { once: true });
   }, [sourceImg]);
 
+  useEffect(() => {
+    if (!depthImg || !depthImgRef.current || !sourceImgRef.current) {
+      depthPixelDataRef.current = null;
+      if (pointsRef.current.length > 0) {
+        applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
+      }
+      return;
+    }
+
+    const sourceImage = sourceImgRef.current;
+    const depthImage = depthImgRef.current;
+
+    const capture = () => {
+      if (!depthImage.naturalWidth || !sourceImage.naturalWidth) return;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = sourceImage.naturalWidth;
+      canvas.height = sourceImage.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.drawImage(depthImage, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      depthPixelDataRef.current = { data: imageData.data, width: canvas.width, height: canvas.height };
+
+      if (pointsRef.current.length > 0) {
+        applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
+      }
+    };
+
+    if (
+      depthImage.complete &&
+      depthImage.naturalWidth > 0 &&
+      sourceImage.complete &&
+      sourceImage.naturalWidth > 0
+    ) {
+      capture();
+    } else {
+      depthImage.addEventListener('load', capture, { once: true });
+      sourceImage.addEventListener('load', capture, { once: true });
+    }
+  }, [depthImg, sourceImg]);
+
+  useEffect(() => {
+    if (pointsRef.current.length === 0) return;
+    applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
+  }, [params.depthScale, params.invertDepth, params.depthColorSpace]);
+
   // Toggle projection mesh wireframe visibility for debugging
   useEffect(() => {
     if (sceneRef.current?.mesh) {
@@ -1656,7 +1787,9 @@ export default function App() {
             const positions = geometry.attributes.position.array;
             const colors = geometry.attributes.color ? geometry.attributes.color.array : null;
             const uvs = geometry.attributes.uv ? geometry.attributes.uv.array : null;
+            const depthSamples = geometry.attributes._depth ? geometry.attributes._depth.array : null;
             const sizes = (geometry.attributes.size || geometry.attributes._size) ? (geometry.attributes.size || geometry.attributes._size).array : null;
+            const zOffsets = geometry.attributes._zOffset ? geometry.attributes._zOffset.array : null;
 
             for (let i = 0; i < positions.length / 3; i++) {
               importedPoints.push({
@@ -1665,6 +1798,8 @@ export default function App() {
                 z: positions[i * 3 + 2],
                 u: uvs ? uvs[i * 2] : undefined,
                 v: uvs ? uvs[i * 2 + 1] : undefined,
+                depthSample: depthSamples ? depthSamples[i] : undefined,
+                zOffset: zOffsets ? zOffsets[i] : 0,
                 r: colors ? colors[i * 3] : 1,
                 g: colors ? colors[i * 3 + 1] : 1,
                 b: colors ? colors[i * 3 + 2] : 1,
@@ -1680,13 +1815,12 @@ export default function App() {
           clearSelectionState();
           setHistory([]);
           setRedoStack([]);
-          setPoints(importedPoints);
+          applyPointSnapshot(importedPoints);
           setStats({
             width: 0,
             height: 0,
             pointCount: importedPoints.length
           });
-          renderPoints(importedPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
           setStatus(`Imported ${importedPoints.length} points`);
         } else {
           setStatus('Error: No points found in GLB');
@@ -1700,10 +1834,11 @@ export default function App() {
   };
 
   const applyPointSnapshot = (nextPoints: PointData[]) => {
-    pointsRef.current = nextPoints;
-    setPoints(nextPoints);
-    rebuildPointCloud(nextPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
-    setStats((prev: { width: number; height: number; pointCount: number }) => ({ ...prev, pointCount: nextPoints.length }));
+    const renderedPoints = materializePointsForDepth(nextPoints, paramsRef.current);
+    pointsRef.current = renderedPoints;
+    setPoints(renderedPoints);
+    rebuildPointCloud(renderedPoints, paramsRef.current.pointSizeMultiplier, maxPointSizeRef.current);
+    setStats((prev: { width: number; height: number; pointCount: number }) => ({ ...prev, pointCount: renderedPoints.length }));
   };
 
   const pushToHistory = () => {
@@ -1835,17 +1970,14 @@ export default function App() {
       const basePoints = result.map((point) => ({ ...point, isAdded: false }));
 
       clearSelectionState();
-      pointsRef.current = basePoints;
       setHistory([]);
       setRedoStack([]);
-      setPoints(basePoints);
+      applyPointSnapshot(basePoints);
       setStats({
         width: sourceImgRef.current.naturalWidth,
         height: sourceImgRef.current.naturalHeight,
         pointCount: basePoints.length
       });
-
-      renderPoints(basePoints, params.pointSizeMultiplier, maxPointSizeRef.current);
 
       // Build / rebuild projection surface mesh for paint/stamp modes
       if (depthImgRef.current && depthImg) {
