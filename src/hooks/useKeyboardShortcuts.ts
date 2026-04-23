@@ -11,6 +11,7 @@ type UseKeyboardShortcutsArgs = {
   setBrushSoftnessPercent: (percent: number) => void;
   handleUndo: () => void;
   handleRedo: () => void;
+  handleSaveSessionToFile: () => void | Promise<void>;
 };
 
 export const useKeyboardShortcuts = ({
@@ -22,10 +23,23 @@ export const useKeyboardShortcuts = ({
   adjustBrushStrengthPercent,
   setBrushSoftnessPercent,
   handleUndo,
-  handleRedo
+  handleRedo,
+  handleSaveSessionToFile
 }: UseKeyboardShortcutsArgs) => {
   useEffect(() => {
     const handleShortcutKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        handleSaveSessionToFile();
+        return;
+      }
+
+      if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        handleSaveSessionToFile();
+        return;
+      }
+
       if (isEditableTarget(event.target)) return;
 
       if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'z') {
@@ -85,6 +99,7 @@ export const useKeyboardShortcuts = ({
     adjustBrushStrengthPercent,
     brushEnabled,
     handleRedo,
+    handleSaveSessionToFile,
     handleUndo,
     hideSelectedPoints,
     isEditableTarget,

@@ -45,6 +45,54 @@ import type {
   VisibilityBrushAction
 } from './types/app';
 
+const SESSION_STORAGE_KEY = 'illuminated-session-v1';
+const SESSION_STORAGE_VERSION = 1;
+
+type PersistedSession = {
+  version: number;
+  sourceImg: string | null;
+  depthImg: string | null;
+  camera?: {
+    position: [number, number, number];
+    target: [number, number, number];
+  };
+  points: PointData[];
+  stats: {
+    width: number;
+    height: number;
+    pointCount: number;
+  };
+  params: SamplingParams;
+  maxPointSize: number;
+  addPointSize: number;
+  showProjectionMesh: boolean;
+  projectionMeshOpacityPercent: number;
+  activeTool: ActiveTool;
+  toolInteractionMode: ToolInteractionMode;
+  visibilityBrushAction: VisibilityBrushAction;
+  depthAction: DepthAction;
+  addAction: AddAction;
+  addAppearanceSource: AddAppearanceSource;
+  isPickingCloneSource: boolean;
+  brushSettings: {
+    enabled: boolean;
+    size: number;
+    strength: number;
+    softness: number;
+    depthAmount: number;
+    mode: BrushMode;
+  };
+  selectionModeEnabled: boolean;
+  selectedPointIndices: number[];
+  savedSelections: SavedSelection[];
+  showPointIndices: boolean;
+};
+
+type BrowserFileWindow = Window & typeof globalThis & {
+  showSaveFilePicker?: (options?: any) => Promise<any>;
+  showOpenFilePicker?: (options?: any) => Promise<any[]>;
+};
+
 export default function App() {
   const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
@@ -63,6 +111,14 @@ export default function App() {
   const [selectionDragState, setSelectionDragState] = useState<SelectionDragState | null>(null);
   const [savedSelections, setSavedSelections] = useState<SavedSelection[]>([]);
   const [showPointIndices, setShowPointIndices] = useState(false);
+  const [hasSavedSession, setHasSavedSession] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(SESSION_STORAGE_KEY) !== null;
+  });
+  const [hasSessionFileHandle, setHasSessionFileHandle] = useState(false);
+  const [sessionFileName, setSessionFileName] = useState<string | null>(null);
+  const [isSessionDirty, setIsSessionDirty] = useState(false);
+  const [cameraRevision, setCameraRevision] = useState(0);
   const [stats, setStats] = useState({
     width: 0,
     height: 0,
@@ -131,6 +187,9 @@ export default function App() {
   const selectedPointIndicesRef = useRef(selectedPointIndices);
   const selectionDragStateRef = useRef<SelectionDragState | null>(selectionDragState);
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
+  const hasRestoredSessionRef = useRef(false);
+  const sessionFileHandleRef = useRef<any>(null);
+  const lastSavedSessionFingerprintRef = useRef<string | null>(null);
   useEffect(() => { brushSettingsRef.current = brushSettings; }, [brushSettings]);
   useEffect(() => { isBrushingRef.current = isBrushing; }, [isBrushing]);
   useEffect(() => { isAltNavigationRef.current = isAltNavigationActive; }, [isAltNavigationActive]);
@@ -338,6 +397,490 @@ export default function App() {
     syncPointIndexLabelVisibility
   });
 
+  const clearProjectionMesh = () => {
+    if (!sceneRef.current?.mesh) return;
+
+    sceneRef.current.scene.remove(sceneRef.current.mesh);
+    sceneRef.current.mesh.geometry.dispose();
+    (sceneRef.current.mesh.material as THREE.Material).dispose();
+    sceneRef.current.mesh = null;
+  };
+
+  const rebuildProjectionSurfaceMesh = (
+    depthImage: HTMLImageElement,
+    currentParams: SamplingParams,
+    sourceWidth: number,
+    sourceHeight: number,
+    visible: boolean,
+    opacityPercent: number
+  ) => {
+    if (!sceneRef.current) return;
+
+    clearProjectionMesh();
+
+    const projMesh = buildProjectionMesh(
+      depthImage,
+      currentParams,
+      sourceWidth,
+      sourceHeight
+    );
+
+    projMesh.visible = true;
+    (projMesh.material as THREE.MeshBasicMaterial).opacity = visible ? opacityPercent / 100 : 0;
+    sceneRef.current.scene.add(projMesh);
+    sceneRef.current.mesh = projMesh;
+  };
+
+  const getSyncedPointsFromScene = (currentPoints: PointData[]) => {
+    if (!sceneRef.current?.points) {
+      return currentPoints.map((point) => ({ ...point }));
+    }
+
+    const geometry = sceneRef.current.points.geometry;
+    const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
+    const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+
+    return currentPoints.map((point, index) => ({
+      ...point,
+      x: index < positionAttr.count ? positionAttr.getX(index) : point.x,
+      y: index < positionAttr.count ? positionAttr.getY(index) : point.y,
+      z: index < positionAttr.count ? positionAttr.getZ(index) : point.z,
+      visibility: index < visibilityAttr.count ? visibilityAttr.getX(index) : point.visibility
+    }));
+  };
+
+  const syncPointsFromSceneState = () => {
+    const syncedPoints = getSyncedPointsFromScene(pointsRef.current);
+    pointsRef.current = syncedPoints;
+    setPoints(syncedPoints);
+    setStats((prev) => ({ ...prev, pointCount: syncedPoints.length }));
+    return syncedPoints;
+  };
+
+  const getCameraSnapshot = () => {
+    if (!sceneRef.current) return undefined;
+
+    const { camera, controls } = sceneRef.current;
+    return {
+      position: [camera.position.x, camera.position.y, camera.position.z] as [number, number, number],
+      target: [controls.target.x, controls.target.y, controls.target.z] as [number, number, number]
+    };
+  };
+
+  const getSessionFingerprint = (session: PersistedSession) => JSON.stringify({
+    version: session.version,
+    sourceImg: session.sourceImg,
+    depthImg: session.depthImg,
+    camera: session.camera
+      ? {
+          position: [...session.camera.position] as [number, number, number],
+          target: [...session.camera.target] as [number, number, number]
+        }
+      : undefined,
+    points: session.points.map((point) => ({
+      x: point.x,
+      y: point.y,
+      z: point.z,
+      u: point.u,
+      v: point.v,
+      r: point.r,
+      g: point.g,
+      b: point.b,
+      size: point.size,
+      visibility: point.visibility,
+      isAdded: point.isAdded ?? false
+    })),
+    stats: session.stats,
+    params: session.params,
+    maxPointSize: session.maxPointSize,
+    addPointSize: session.addPointSize,
+    showProjectionMesh: session.showProjectionMesh,
+    projectionMeshOpacityPercent: session.projectionMeshOpacityPercent,
+    activeTool: session.activeTool,
+    toolInteractionMode: session.toolInteractionMode,
+    visibilityBrushAction: session.visibilityBrushAction,
+    depthAction: session.depthAction,
+    addAction: session.addAction,
+    addAppearanceSource: session.addAppearanceSource,
+    isPickingCloneSource: session.isPickingCloneSource,
+    brushSettings: session.brushSettings,
+    selectionModeEnabled: session.selectionModeEnabled,
+    selectedPointIndices: [...session.selectedPointIndices],
+    savedSelections: session.savedSelections.map((selection) => ({
+      id: selection.id,
+      name: selection.name,
+      indices: [...selection.indices]
+    })),
+    showPointIndices: session.showPointIndices
+  });
+
+  const createPersistedSession = (): PersistedSession => {
+    const syncedPoints = getSyncedPointsFromScene(pointsRef.current);
+
+    return {
+      version: SESSION_STORAGE_VERSION,
+      sourceImg,
+      depthImg,
+      camera: getCameraSnapshot(),
+      points: syncedPoints,
+      stats: {
+        ...stats,
+        pointCount: syncedPoints.length
+      },
+      params,
+      maxPointSize,
+      addPointSize,
+      showProjectionMesh,
+      projectionMeshOpacityPercent,
+      activeTool,
+      toolInteractionMode,
+      visibilityBrushAction,
+      depthAction,
+      addAction,
+      addAppearanceSource,
+      isPickingCloneSource,
+      brushSettings,
+      selectionModeEnabled,
+      selectedPointIndices: selectedPointIndices.filter((index) => index >= 0 && index < syncedPoints.length),
+      savedSelections,
+      showPointIndices
+    };
+  };
+
+  const persistSession = (session: PersistedSession) => {
+    try {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+      setHasSavedSession(true);
+      return true;
+    } catch (primaryError) {
+      try {
+        window.localStorage.setItem(
+          SESSION_STORAGE_KEY,
+          JSON.stringify({
+            ...session,
+            sourceImg: null,
+            depthImg: null
+          })
+        );
+        setHasSavedSession(true);
+        console.warn('Session save exceeded storage budget; images were omitted.', primaryError);
+        return true;
+      } catch (secondaryError) {
+        console.error('Session save failed.', secondaryError);
+        return false;
+      }
+    }
+  };
+
+  const loadImageForSession = async (src: string) => {
+    const image = new Image();
+    image.src = src;
+    await image.decode();
+    return image;
+  };
+
+  const applyPersistedSession = async (restoredSession: PersistedSession) => {
+    setSourceImg(restoredSession.sourceImg ?? null);
+    setDepthImg(restoredSession.depthImg ?? null);
+    setParams(restoredSession.params);
+    paramsRef.current = restoredSession.params;
+    setMaxPointSize(restoredSession.maxPointSize);
+    maxPointSizeRef.current = restoredSession.maxPointSize;
+    setAddPointSize(restoredSession.addPointSize);
+    addPointSizeRef.current = restoredSession.addPointSize;
+    setShowProjectionMesh(restoredSession.showProjectionMesh);
+    setProjectionMeshOpacityPercent(restoredSession.projectionMeshOpacityPercent);
+    setActiveTool(restoredSession.activeTool);
+    setToolInteractionMode(restoredSession.toolInteractionMode);
+    setVisibilityBrushAction(restoredSession.visibilityBrushAction);
+    setDepthAction(restoredSession.depthAction);
+    setAddAction(restoredSession.addAction);
+    setAddAppearanceSource(restoredSession.addAppearanceSource);
+    setIsPickingCloneSource(restoredSession.isPickingCloneSource);
+    isPickingCloneSourceRef.current = restoredSession.isPickingCloneSource;
+    setBrushSettings(restoredSession.brushSettings);
+    brushSettingsRef.current = restoredSession.brushSettings;
+    setSelectionModeEnabled(restoredSession.selectionModeEnabled);
+    selectionModeEnabledRef.current = restoredSession.selectionModeEnabled;
+    setSavedSelections(restoredSession.savedSelections ?? []);
+    setShowPointIndices(restoredSession.showPointIndices);
+    setHistory([]);
+    setRedoStack([]);
+
+    const restoredPoints = (restoredSession.points ?? []).map((point) => ({
+      ...point,
+      isAdded: point.isAdded ?? false
+    }));
+    const validSelectedIndices = (restoredSession.selectedPointIndices ?? []).filter(
+      (index) => index >= 0 && index < restoredPoints.length
+    );
+
+    pointsRef.current = restoredPoints;
+    selectedPointIndicesRef.current = validSelectedIndices;
+    setPoints(restoredPoints);
+    setSelectedPointIndices(validSelectedIndices);
+    setStats({
+      ...restoredSession.stats,
+      pointCount: restoredPoints.length
+    });
+
+    if (restoredSession.camera && sceneRef.current) {
+      const { camera, controls } = sceneRef.current;
+      camera.position.set(...restoredSession.camera.position);
+      controls.target.set(...restoredSession.camera.target);
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+
+    if (restoredPoints.length > 0) {
+      renderPoints(
+        restoredPoints,
+        restoredSession.params.pointSizeMultiplier,
+        restoredSession.maxPointSize
+      );
+    }
+
+    if (
+      restoredPoints.length > 0 &&
+      restoredSession.sourceImg &&
+      restoredSession.depthImg
+    ) {
+      try {
+        const [sourceImage, depthImage] = await Promise.all([
+          loadImageForSession(restoredSession.sourceImg),
+          loadImageForSession(restoredSession.depthImg)
+        ]);
+
+        rebuildProjectionSurfaceMesh(
+          depthImage,
+          restoredSession.params,
+          sourceImage.naturalWidth,
+          sourceImage.naturalHeight,
+          restoredSession.showProjectionMesh,
+          restoredSession.projectionMeshOpacityPercent
+        );
+      } catch (error) {
+        console.error(error);
+      }
+    } else {
+      clearProjectionMesh();
+    }
+
+    setHasSavedSession(true);
+    return restoredPoints;
+  };
+
+  const handleSaveSession = () => {
+    const saved = persistSession(createPersistedSession());
+    setStatus(saved ? 'Session saved' : 'Error: Session save failed');
+  };
+
+  const handleLoadSession = async (silentWhenMissing: boolean = false) => {
+    try {
+      const rawSession = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!rawSession) {
+        setHasSavedSession(false);
+        if (!silentWhenMissing) {
+          setStatus('Notice: No saved session found');
+        }
+        return;
+      }
+
+      const restoredSession = JSON.parse(rawSession) as PersistedSession;
+      if (restoredSession.version !== SESSION_STORAGE_VERSION) {
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        setHasSavedSession(false);
+        if (!silentWhenMissing) {
+          setStatus('Notice: Saved session is from an older format');
+        }
+        return;
+      }
+
+      const restoredPoints = await applyPersistedSession(restoredSession);
+      setStatus(restoredPoints.length > 0 ? 'Session loaded' : 'Session loaded (empty)');
+    } catch (error) {
+      console.error(error);
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      setHasSavedSession(false);
+      if (!silentWhenMissing) {
+        setStatus('Error: Session load failed');
+      }
+    }
+  };
+
+  const handleClearSavedSession = () => {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    setHasSavedSession(false);
+    setStatus('Saved session cleared');
+  };
+
+  const supportsFileSessionSave = () => {
+    const browserWindow = window as BrowserFileWindow;
+    return Boolean(browserWindow.showSaveFilePicker && browserWindow.showOpenFilePicker);
+  };
+
+  const getSessionFilePickerOptions = () => ({
+    excludeAcceptAllOption: false,
+    suggestedName: sessionFileName ?? 'illuminated-session.json',
+    types: [
+      {
+        description: 'Illuminated session JSON',
+        accept: {
+          'application/json': ['.json'],
+          'text/json': ['.json']
+        }
+      }
+    ]
+  });
+
+  const ensureSessionFilePermission = async (fileHandle: any) => {
+    const permissionOptions = { mode: 'readwrite' as const };
+
+    if (typeof fileHandle.queryPermission === 'function') {
+      const currentPermission = await fileHandle.queryPermission(permissionOptions);
+      if (currentPermission === 'granted') {
+        return true;
+      }
+    }
+
+    if (typeof fileHandle.requestPermission === 'function') {
+      const requestedPermission = await fileHandle.requestPermission(permissionOptions);
+      return requestedPermission === 'granted';
+    }
+
+    return true;
+  };
+
+  const writeSessionToFileHandle = async (fileHandle: any) => {
+    const session = createPersistedSession();
+    const writable = await fileHandle.createWritable();
+    await writable.write(`${JSON.stringify(session, null, 2)}\n`);
+    await writable.close();
+
+    sessionFileHandleRef.current = fileHandle;
+    setHasSessionFileHandle(true);
+    setSessionFileName(typeof fileHandle.name === 'string' ? fileHandle.name : 'illuminated-session.json');
+    lastSavedSessionFingerprintRef.current = getSessionFingerprint(session);
+    setIsSessionDirty(false);
+  };
+
+  const handleSaveSessionToFile = async (saveAs: boolean = false) => {
+    if (!supportsFileSessionSave()) {
+      setStatus('Notice: File-based session save needs a Chromium browser with File System Access support');
+      return;
+    }
+
+    try {
+      const browserWindow = window as BrowserFileWindow;
+      let fileHandle = sessionFileHandleRef.current;
+
+      if (saveAs || !fileHandle) {
+        fileHandle = await browserWindow.showSaveFilePicker?.(getSessionFilePickerOptions());
+      }
+
+      if (!fileHandle) {
+        return;
+      }
+
+      const hasPermission = await ensureSessionFilePermission(fileHandle);
+      if (!hasPermission) {
+        setStatus('Notice: Session file write permission was denied');
+        return;
+      }
+
+      await writeSessionToFileHandle(fileHandle);
+      setStatus(`Session saved to ${typeof fileHandle.name === 'string' ? fileHandle.name : 'session file'}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+
+      console.error(error);
+      setStatus('Error: Session file save failed');
+    }
+  };
+
+  const handleLoadSessionFromFile = async () => {
+    if (!supportsFileSessionSave()) {
+      setStatus('Notice: File-based session load needs a Chromium browser with File System Access support');
+      return;
+    }
+
+    try {
+      const browserWindow = window as BrowserFileWindow;
+      const [fileHandle] = (await browserWindow.showOpenFilePicker?.(getSessionFilePickerOptions())) ?? [];
+      if (!fileHandle) {
+        return;
+      }
+
+      const file = await fileHandle.getFile();
+      const rawSession = await file.text();
+      const restoredSession = JSON.parse(rawSession) as PersistedSession;
+
+      if (restoredSession.version !== SESSION_STORAGE_VERSION) {
+        setStatus('Notice: Selected session file uses an older format');
+        return;
+      }
+
+      const restoredPoints = await applyPersistedSession(restoredSession);
+      sessionFileHandleRef.current = fileHandle;
+      setHasSessionFileHandle(true);
+      setSessionFileName(typeof fileHandle.name === 'string' ? fileHandle.name : file.name);
+      lastSavedSessionFingerprintRef.current = getSessionFingerprint(restoredSession);
+      setIsSessionDirty(false);
+      setStatus(restoredPoints.length > 0 ? `Session loaded from ${file.name}` : `Loaded empty session from ${file.name}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+
+      console.error(error);
+      setStatus('Error: Session file load failed');
+    }
+  };
+
+  const handleForgetSessionFile = () => {
+    sessionFileHandleRef.current = null;
+    setHasSessionFileHandle(false);
+    setSessionFileName(null);
+    lastSavedSessionFingerprintRef.current = null;
+    setIsSessionDirty(false);
+    setStatus('Session file path forgotten');
+  };
+
+  useEffect(() => {
+    if (!hasSessionFileHandle || !lastSavedSessionFingerprintRef.current) {
+      setIsSessionDirty(false);
+      return;
+    }
+
+    setIsSessionDirty(getSessionFingerprint(createPersistedSession()) !== lastSavedSessionFingerprintRef.current);
+  }, [
+    sourceImg,
+    depthImg,
+    points,
+    stats,
+    params,
+    maxPointSize,
+    addPointSize,
+    showProjectionMesh,
+    projectionMeshOpacityPercent,
+    activeTool,
+    toolInteractionMode,
+    visibilityBrushAction,
+    depthAction,
+    addAction,
+    addAppearanceSource,
+    isPickingCloneSource,
+    brushSettings,
+    selectionModeEnabled,
+    selectedPointIndices,
+    savedSelections,
+    showPointIndices,
+    hasSessionFileHandle,
+    cameraRevision
+  ]);
+
   // Initialize Three.js
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -358,6 +901,10 @@ export default function App() {
 
     const controls = new OrbitControls(camera, renderer.domElement);
     camera.position.set(0, 0, 500);
+    const handleControlsEnd = () => {
+      setCameraRevision((prev) => prev + 1);
+    };
+    controls.addEventListener('end', handleControlsEnd);
     
     // Create Brush Indicator (Circle)
     const ringGeometry = new THREE.RingGeometry(0.9, 1, 32);
@@ -532,6 +1079,18 @@ export default function App() {
           return (0.299 * r) + (0.587 * g) + (0.114 * b);
         };
 
+        const getUvFromWorldPos = (worldPos: THREE.Vector3) => {
+          if (!pixelData) return { u: 0, v: 0 };
+
+          const px = Math.round(worldPos.x / currentParams.xyScale + pixelData.width / 2);
+          const py = Math.round(-worldPos.y / currentParams.xyScale + pixelData.height / 2);
+
+          return {
+            u: pixelData.width > 1 ? Math.max(0, Math.min(pixelData.width - 1, px)) / (pixelData.width - 1) : 0,
+            v: pixelData.height > 1 ? 1 - (Math.max(0, Math.min(pixelData.height - 1, py)) / (pixelData.height - 1)) : 0
+          };
+        };
+
         const findNearbyNonBackgroundColor = (centerPx: number, centerPy: number): { r: number; g: number; b: number } | null => {
           if (!pixelData) return null;
 
@@ -620,6 +1179,17 @@ export default function App() {
           };
         };
 
+        const resolvePointUv = (worldPos: THREE.Vector3, uv?: THREE.Vector2 | null) => {
+          if (uv) {
+            return {
+              u: Math.max(0, Math.min(1, uv.x)),
+              v: Math.max(0, Math.min(1, uv.y))
+            };
+          }
+
+          return getUvFromWorldPos(worldPos);
+        };
+
         const newPoints: PointData[] = [];
 
         if (settings.mode === 'stamp') {
@@ -629,7 +1199,8 @@ export default function App() {
           if (hits.length > 0) {
             const hp = hits[0].point;
             const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
-            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size, visibility: 1.0 });
+            const { u, v } = resolvePointUv(hp, hits[0].uv);
+            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, r, g, b, size, visibility: 1.0 });
           }
         } else {
           // Paint: scatter N points within brush radius
@@ -647,7 +1218,8 @@ export default function App() {
             if (hits.length > 0) {
               const hp = hits[0].point;
               const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
-              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, r, g, b, size, visibility: 1.0 });
+              const { u, v } = resolvePointUv(hp, hits[0].uv);
+              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, r, g, b, size, visibility: 1.0 });
             }
           }
         }
@@ -860,6 +1432,16 @@ export default function App() {
         setSelectionDragState(null);
       }
 
+      const finishedBrushMode = brushSettingsRef.current.mode;
+      if (
+        isBrushingRef.current &&
+        finishedBrushMode !== 'select' &&
+        finishedBrushMode !== 'paint' &&
+        finishedBrushMode !== 'stamp'
+      ) {
+        syncPointsFromSceneState();
+      }
+
       setIsBrushing(false);
     };
 
@@ -885,6 +1467,7 @@ export default function App() {
     resizeObserver.observe(container);
 
     return () => {
+      controls.removeEventListener('end', handleControlsEnd);
       renderer.domElement.removeEventListener('mousedown', handleMouseDown);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
@@ -900,6 +1483,76 @@ export default function App() {
   useEffect(() => {
     rebuildPointIndexLabels(points);
   }, [showPointIndices, points]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        if (!window.localStorage.getItem(SESSION_STORAGE_KEY)) {
+          setHasSavedSession(false);
+          return;
+        }
+
+        if (cancelled) return;
+
+        await handleLoadSession(true);
+
+        if (!cancelled) {
+          setStatus(window.localStorage.getItem(SESSION_STORAGE_KEY) ? 'Session restored' : 'Ready');
+        }
+      } catch (error) {
+        console.error(error);
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        setHasSavedSession(false);
+      } finally {
+        if (!cancelled) {
+          hasRestoredSessionRef.current = true;
+        }
+      }
+    };
+
+    restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasRestoredSessionRef.current) return;
+
+    const saveTimeout = window.setTimeout(() => {
+      persistSession(createPersistedSession());
+    }, 300);
+
+    return () => {
+      window.clearTimeout(saveTimeout);
+    };
+  }, [
+    sourceImg,
+    depthImg,
+    points,
+    stats,
+    params,
+    maxPointSize,
+    addPointSize,
+    showProjectionMesh,
+    projectionMeshOpacityPercent,
+    activeTool,
+    toolInteractionMode,
+    visibilityBrushAction,
+    depthAction,
+    addAction,
+    addAppearanceSource,
+    isPickingCloneSource,
+    brushSettings,
+    selectionModeEnabled,
+    selectedPointIndices,
+    savedSelections,
+    showPointIndices,
+    cameraRevision
+  ]);
 
   // Capture source image pixel data so paint/stamp can sample colors
   useEffect(() => {
@@ -1002,6 +1655,7 @@ export default function App() {
             const geometry = child.geometry;
             const positions = geometry.attributes.position.array;
             const colors = geometry.attributes.color ? geometry.attributes.color.array : null;
+            const uvs = geometry.attributes.uv ? geometry.attributes.uv.array : null;
             const sizes = (geometry.attributes.size || geometry.attributes._size) ? (geometry.attributes.size || geometry.attributes._size).array : null;
 
             for (let i = 0; i < positions.length / 3; i++) {
@@ -1009,6 +1663,8 @@ export default function App() {
                 x: positions[i * 3],
                 y: positions[i * 3 + 1],
                 z: positions[i * 3 + 2],
+                u: uvs ? uvs[i * 2] : undefined,
+                v: uvs ? uvs[i * 2 + 1] : undefined,
                 r: colors ? colors[i * 3] : 1,
                 g: colors ? colors[i * 3 + 1] : 1,
                 b: colors ? colors[i * 3 + 2] : 1,
@@ -1109,7 +1765,8 @@ export default function App() {
     adjustBrushStrengthPercent,
     setBrushSoftnessPercent,
     handleUndo,
-    handleRedo
+    handleRedo,
+    handleSaveSessionToFile
   });
 
   const addNewPoints = (newPoints: PointData[]) => {
@@ -1191,24 +1848,17 @@ export default function App() {
       renderPoints(basePoints, params.pointSizeMultiplier, maxPointSizeRef.current);
 
       // Build / rebuild projection surface mesh for paint/stamp modes
-      if (sceneRef.current) {
-        if (sceneRef.current.mesh) {
-          sceneRef.current.scene.remove(sceneRef.current.mesh);
-          sceneRef.current.mesh.geometry.dispose();
-          sceneRef.current.mesh = null;
-        }
-        if (depthImgRef.current && depthImg) {
-          const projMesh = buildProjectionMesh(
-            depthImgRef.current,
-            params,
-            sourceImgRef.current.naturalWidth,
-            sourceImgRef.current.naturalHeight
-          );
-          projMesh.visible = true;
-          (projMesh.material as THREE.MeshBasicMaterial).opacity = showProjectionMesh ? projectionMeshOpacityPercent / 100 : 0;
-          sceneRef.current.scene.add(projMesh);
-          sceneRef.current.mesh = projMesh;
-        }
+      if (depthImgRef.current && depthImg) {
+        rebuildProjectionSurfaceMesh(
+          depthImgRef.current,
+          params,
+          sourceImgRef.current.naturalWidth,
+          sourceImgRef.current.naturalHeight,
+          showProjectionMesh,
+          projectionMeshOpacityPercent
+        );
+      } else {
+        clearProjectionMesh();
       }
 
       setStatus('Success: Points generated');
@@ -1271,6 +1921,8 @@ export default function App() {
     setStatus('Export complete');
   };
 
+  const fileSessionSaveSupported = typeof window !== 'undefined' && supportsFileSessionSave();
+
   return (
     <div className="w-full h-screen bg-tech-bg text-tech-text font-sans flex flex-col overflow-hidden">
       {/* Header */}
@@ -1282,12 +1934,41 @@ export default function App() {
         <div className="flex-1 px-8">
            <div className="mono-label opacity-40">Pipeline Status: <span className={status.includes('Error') ? 'text-red-500' : 'text-[#00FF41]'}>{status}</span></div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          <div className="hidden xl:flex items-center gap-2 text-[9px] font-mono uppercase text-tech-muted">
+            <span>Session:</span>
+            <span className={hasSessionFileHandle ? (isSessionDirty ? 'text-tech-accent' : 'text-[#00FF41]') : 'opacity-50'}>
+              {hasSessionFileHandle ? (isSessionDirty ? 'Dirty' : 'Clean') : 'Unlinked'}
+            </span>
+            <span className="max-w-[180px] truncate opacity-60">{sessionFileName ?? 'No file'}</span>
+          </div>
+          <button
+            onClick={() => handleSaveSessionToFile(!hasSessionFileHandle)}
+            disabled={!fileSessionSaveSupported}
+            className={`px-3 py-1.5 border text-[10px] font-mono transition-colors uppercase tracking-widest disabled:opacity-30 ${isSessionDirty ? 'border-tech-accent text-tech-accent hover:bg-tech-accent/10' : 'border-tech-subtle-border hover:bg-tech-border'}`}
+          >
+            {hasSessionFileHandle ? 'Save Session' : 'Save Session As'}
+          </button>
+          <button
+            onClick={handleLoadSessionFromFile}
+            disabled={!fileSessionSaveSupported}
+            className="px-3 py-1.5 border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest disabled:opacity-30"
+          >
+            Load Session
+          </button>
+          <button
+            onClick={handleForgetSessionFile}
+            disabled={!hasSessionFileHandle}
+            className="px-3 py-1.5 border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest disabled:opacity-30"
+          >
+            Forget Session
+          </button>
           <button 
             onClick={() => {
               setSourceImg(null);
               setDepthImg(null);
               setPoints([]);
+              pointsRef.current = [];
               setActiveTool('visibility');
               setToolInteractionMode('brush');
               setVisibilityBrushAction('hide');
@@ -1301,6 +1982,8 @@ export default function App() {
               setRedoStack([]);
               clearSelectionState();
               setStatus('Ready');
+              window.localStorage.removeItem(SESSION_STORAGE_KEY);
+              setHasSavedSession(false);
               if (sceneRef.current?.points) {
                 sceneRef.current.scene.remove(sceneRef.current.points);
                 sceneRef.current.points = null;
@@ -1310,6 +1993,7 @@ export default function App() {
                 disposePointIndexLabels(sceneRef.current.pointIndexLabels);
                 sceneRef.current.pointIndexLabels = null;
               }
+              clearProjectionMesh();
             }}
             className="px-4 py-1.5 bg-transparent border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest"
           >
@@ -1501,6 +2185,8 @@ export default function App() {
           <span className="flex items-center gap-1.5"><div className="w-1 h-1 bg-[#00FF41] rounded-full" /> NODE_STATE: STABLE</span>
           <span>PROCESS_ID: {Math.random().toString(36).substring(2, 8).toUpperCase()}</span>
           <span>PROVIDER: {(depthImg && !isAutoDepthLoading) ? 'MANUAL_MAP' : isAutoDepthLoading ? 'AUTO_GENERATING' : 'READY'}</span>
+          <span>SESSION: LOCAL_AUTOSAVE</span>
+          <span>FILE_SESSION: {hasSessionFileHandle ? (isSessionDirty ? 'DIRTY' : 'CLEAN') : 'UNLINKED'}</span>
         </div>
         <div className="flex gap-4 items-center">
           <span className="text-tech-accent">SYSTEM READY</span>

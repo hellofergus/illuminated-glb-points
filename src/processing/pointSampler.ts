@@ -9,6 +9,8 @@ export interface PointData {
   x: number;
   y: number;
   z: number;
+  u?: number;
+  v?: number;
   r: number;
   g: number;
   b: number;
@@ -148,6 +150,11 @@ export async function processImages(
     const alpha = sourceData[idx + 3] / 255;
     return getLuminosity(idx) * alpha;
   };
+
+  const getNormalizedUv = (sourceX: number, sourceY: number) => ({
+    u: width > 1 ? sourceX / (width - 1) : 0,
+    v: height > 1 ? 1 - (sourceY / (height - 1)) : 0
+  });
 
   const isRecoverablePeak = (x: number, y: number) => {
     const centerLuminance = getWeightedLuminanceAt(x, y);
@@ -343,10 +350,14 @@ export async function processImages(
         radiusSquared: claimRadius * claimRadius
       });
 
+      const { u, v } = getNormalizedUv(targetX, targetY);
+
       points.push({
         x: (targetX - width / 2) * params.xyScale,
         y: -(targetY - height / 2) * params.xyScale,
         z: averageDepth * params.depthScale,
+        u,
+        v,
         r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
         g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
         b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -498,6 +509,7 @@ export async function processImages(
         x: ((weightedX / totalWeight) - width / 2) * params.xyScale,
         y: -((weightedY / totalWeight) - height / 2) * params.xyScale,
         z: (weightedDepth / totalWeight) * params.depthScale,
+        ...getNormalizedUv(weightedX / totalWeight, weightedY / totalWeight),
         r: weightedR / totalWeight,
         g: weightedG / totalWeight,
         b: weightedB / totalWeight,
@@ -524,11 +536,14 @@ export async function processImages(
             const sampled = sampleSource(targetX, targetY);
             let dV = getDepthAt(targetX, targetY);
             if (params.invertDepth) dV = 1.0 - dV;
+            const { u, v } = getNormalizedUv(targetX, targetY);
 
             points.push({
               x: (targetX - width / 2) * params.xyScale,
               y: -(targetY - height / 2) * params.xyScale,
               z: dV * params.depthScale,
+              u,
+              v,
               r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
               g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
               b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -603,11 +618,14 @@ export async function processImages(
             const sampled = sampleSource(targetX, targetY);
             let depthVal = getDepthAt(targetX, targetY);
             if (params.invertDepth) depthVal = 1.0 - depthVal;
+            const { u, v } = getNormalizedUv(targetX, targetY);
 
             points.push({
               x: (targetX - width / 2) * params.xyScale,
               y: -(targetY - height / 2) * params.xyScale,
               z: depthVal * params.depthScale,
+              u,
+              v,
               r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
               g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
               b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -639,11 +657,14 @@ export async function processImages(
             const sampled = sampleSource(targetX, targetY);
             let dV = getDepthAt(targetX, targetY);
             if (params.invertDepth) dV = 1.0 - dV;
+            const { u, v } = getNormalizedUv(targetX, targetY);
 
             points.push({
               x: (targetX - width / 2) * params.xyScale,
               y: -(targetY - height / 2) * params.xyScale,
               z: dV * params.depthScale,
+              u,
+              v,
               r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
               g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
               b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -666,11 +687,14 @@ export async function processImages(
       const sampled = sampleSource(targetX, targetY);
       let depthVal = getDepthAt(targetX, targetY);
       if (params.invertDepth) depthVal = 1.0 - depthVal;
+      const { u, v } = getNormalizedUv(targetX, targetY);
 
       points.push({
         x: (targetX - width / 2) * params.xyScale,
         y: -(targetY - height / 2) * params.xyScale,
         z: depthVal * params.depthScale,
+        u,
+        v,
         r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
         g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
         b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
@@ -722,6 +746,7 @@ export async function exportToGLB(points: PointData[]): Promise<Blob> {
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(visiblePoints.length * 3);
   const colors = new Float32Array(visiblePoints.length * 3);
+  const uvs = new Float32Array(visiblePoints.length * 2);
 
   visiblePoints.forEach((p, i) => {
     positions[i * 3] = p.x;
@@ -730,20 +755,20 @@ export async function exportToGLB(points: PointData[]): Promise<Blob> {
     colors[i * 3] = p.r;
     colors[i * 3 + 1] = p.g;
     colors[i * 3 + 2] = p.b;
+    uvs[i * 2] = p.u ?? 0;
+    uvs[i * 2 + 1] = p.v ?? 0;
   });
 
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
 
   // Export sizes as a custom attribute
   const sizes = new Float32Array(visiblePoints.length);
-  const normals = new Float32Array(visiblePoints.length * 3);
   visiblePoints.forEach((p, i) => {
     sizes[i] = p.size || 1.0;
-    normals[i * 3] = p.size || 1.0; // Abuse normal X for size for legacy importers
   });
   geometry.setAttribute('_size', new THREE.BufferAttribute(sizes, 1));
-  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
 
   const material = new THREE.PointsMaterial({ size: 0.1, vertexColors: true, sizeAttenuation: true });
   const pointsMesh = new THREE.Points(geometry, material);
