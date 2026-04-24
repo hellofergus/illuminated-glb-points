@@ -21,6 +21,7 @@ export type SelectionDragState = {
 export type HistorySnapshot = {
   points: PointData[];
   selectedPointIndices: number[];
+  paintedDepthImg?: string | null;
 };
 
 export type ActiveTool = 'visibility' | 'depth' | 'add';

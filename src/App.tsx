@@ -25,7 +25,7 @@ import {
   Undo,
   Redo
 } from 'lucide-react';
-import { processImages, exportToGLB, getAutoDepthMap, buildProjectionMesh, SamplingParams, PointData } from './processing/pointSampler';
+import { processImages, exportToGLB, getAutoDepthMap, buildProjectionMesh, SamplingParams, PointData, type DepthPixelSource } from './processing/pointSampler';
 import { BrushMode, findNearestHit, getBrushInfluence, getIndicesInRectangle, mergeSelectionIndices, shouldApplyBrushEffect, type ScreenPointHit } from './processing/pointInteraction';
 import { ControlSidebar } from './components/ControlSidebar';
 import { createPointCloudManager, disposePointIndexLabels } from './three/pointCloud';
@@ -52,6 +52,9 @@ type PersistedSession = {
   version: number;
   sourceImg: string | null;
   depthImg: string | null;
+  paintedDepthImg?: string | null;
+  showDepthOverlay?: boolean;
+  depthOverlayOpacityPercent?: number;
   camera?: {
     position: [number, number, number];
     target: [number, number, number];
@@ -98,10 +101,32 @@ export default function App() {
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampBrushDepthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampSoftnessPercent = (percent: number) => Math.min(100, Math.max(0, percent));
+  const toHexChannel = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255).toString(16).padStart(2, '0').toUpperCase();
+  const rgbToHex = (point: PointData) => `#${toHexChannel(point.r)}${toHexChannel(point.g)}${toHexChannel(point.b)}`;
+
+  const parseHexColor = (value: string) => {
+    const normalizedValue = value.trim().replace(/^#/, '');
+    const expandedValue = normalizedValue.length === 3
+      ? normalizedValue.split('').map((char) => `${char}${char}`).join('')
+      : normalizedValue;
+
+    if (!/^[0-9A-Fa-f]{6}$/.test(expandedValue)) {
+      return null;
+    }
+
+    return {
+      r: parseInt(expandedValue.slice(0, 2), 16) / 255,
+      g: parseInt(expandedValue.slice(2, 4), 16) / 255,
+      b: parseInt(expandedValue.slice(4, 6), 16) / 255
+    };
+  };
 
   // UI State
   const [sourceImg, setSourceImg] = useState<string | null>(null);
   const [depthImg, setDepthImg] = useState<string | null>(null);
+  const [paintedDepthImg, setPaintedDepthImg] = useState<string | null>(null);
+  const [showDepthOverlay, setShowDepthOverlay] = useState(false);
+  const [depthOverlayOpacityPercent, setDepthOverlayOpacityPercent] = useState<number>(45);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAutoDepthLoading, setIsAutoDepthLoading] = useState(false);
   const [status, setStatus] = useState<string>('Ready');
@@ -147,6 +172,7 @@ export default function App() {
   const [addAction, setAddAction] = useState<AddAction>('single');
   const [addAppearanceSource, setAddAppearanceSource] = useState<AddAppearanceSource>('image');
   const [isPickingCloneSource, setIsPickingCloneSource] = useState(false);
+  const [isPickingPointColor, setIsPickingPointColor] = useState(false);
 
   // Brush State
   const [brushSettings, setBrushSettings] = useState({
@@ -175,15 +201,20 @@ export default function App() {
 
   const sourcePixelDataRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
   const depthPixelDataRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+  const paintedDepthCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hasPendingDepthPaintSyncRef = useRef(false);
   const addAppearanceSourceRef = useRef(addAppearanceSource);
   useEffect(() => { addAppearanceSourceRef.current = addAppearanceSource; }, [addAppearanceSource]);
   const isPickingCloneSourceRef = useRef(isPickingCloneSource);
   useEffect(() => { isPickingCloneSourceRef.current = isPickingCloneSource; }, [isPickingCloneSource]);
+  const isPickingPointColorRef = useRef(isPickingPointColor);
+  useEffect(() => { isPickingPointColorRef.current = isPickingPointColor; }, [isPickingPointColor]);
 
   const raycasterRef = useRef(new THREE.Raycaster());
 
   // Callback ref so Three.js closure can call the latest addNewPoints
   const addNewPointsCallbackRef = useRef<((pts: PointData[]) => void) | null>(null);
+  const applySelectedPointColorCallbackRef = useRef<((hexColor: string) => void) | null>(null);
   const selectionModeEnabledRef = useRef(selectionModeEnabled);
   const selectedPointIndicesRef = useRef(selectedPointIndices);
   const selectionDragStateRef = useRef<SelectionDragState | null>(selectionDragState);
@@ -344,6 +375,7 @@ export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const sourceImgRef = useRef<HTMLImageElement>(null);
   const depthImgRef = useRef<HTMLImageElement>(null);
+  const sessionFileInputRef = useRef<HTMLInputElement>(null);
   const sceneRef = useRef<SceneRefs | null>(null);
   const brushStrengthPercent = Math.round(brushSettings.strength * 100);
   const brushDepthPercent = Math.round(brushSettings.depthAmount * 100);
@@ -356,6 +388,12 @@ export default function App() {
     0
   );
   const cloneSourceIndex = selectedPointCount === 1 ? sortedSelectedPointIndices[0] : null;
+  const primarySelectedPoint = cloneSourceIndex !== null ? points[cloneSourceIndex] ?? null : (selectedPointCount > 0 ? points[sortedSelectedPointIndices[0]] ?? null : null);
+  const selectedPointColorHex = primarySelectedPoint ? rgbToHex(primarySelectedPoint) : null;
+  const selectedPointColorMixed = selectedPointCount > 1 && !!primarySelectedPoint && sortedSelectedPointIndices.some((index) => {
+    const point = points[index];
+    return !!point && rgbToHex(point) !== selectedPointColorHex;
+  });
   const selectionRect = selectionDragState ? {
     left: Math.min(selectionDragState.startX, selectionDragState.currentX),
     top: Math.min(selectionDragState.startY, selectionDragState.currentY),
@@ -408,7 +446,7 @@ export default function App() {
   };
 
   const rebuildProjectionSurfaceMesh = (
-    depthImage: HTMLImageElement,
+    depthPixels: DepthPixelSource,
     currentParams: SamplingParams,
     sourceWidth: number,
     sourceHeight: number,
@@ -420,7 +458,7 @@ export default function App() {
     clearProjectionMesh();
 
     const projMesh = buildProjectionMesh(
-      depthImage,
+      depthPixels,
       currentParams,
       sourceWidth,
       sourceHeight
@@ -430,6 +468,13 @@ export default function App() {
     (projMesh.material as THREE.MeshBasicMaterial).opacity = visible ? opacityPercent / 100 : 0;
     sceneRef.current.scene.add(projMesh);
     sceneRef.current.mesh = projMesh;
+  };
+
+  const syncPaintedDepthImageState = () => {
+    const paintedCanvas = paintedDepthCanvasRef.current;
+    if (!paintedCanvas) return;
+    hasPendingDepthPaintSyncRef.current = false;
+    setPaintedDepthImg(paintedCanvas.toDataURL('image/png'));
   };
 
   const getSyncedPointsFromScene = (currentPoints: PointData[]) => {
@@ -494,6 +539,95 @@ export default function App() {
     return normalizedValue;
   };
 
+  const sampleSourceColorFromUv = (u?: number, v?: number) => {
+    const sourcePixels = sourcePixelDataRef.current;
+    if (!sourcePixels || typeof u !== 'number' || typeof v !== 'number') {
+      return null;
+    }
+
+    const clampedU = Math.max(0, Math.min(1, u));
+    const clampedV = Math.max(0, Math.min(1, v));
+    const px = Math.round(clampedU * (sourcePixels.width - 1));
+    const py = Math.round((1 - clampedV) * (sourcePixels.height - 1));
+    const pixelIndex = (py * sourcePixels.width + px) * 4;
+
+    return `#${sourcePixels.data[pixelIndex].toString(16).padStart(2, '0')}${sourcePixels.data[pixelIndex + 1].toString(16).padStart(2, '0')}${sourcePixels.data[pixelIndex + 2].toString(16).padStart(2, '0')}`.toUpperCase();
+  };
+
+  const paintDepthAtUv = (u: number, v: number, settings: typeof brushSettings, currentParams: SamplingParams) => {
+    const paintedCanvas = paintedDepthCanvasRef.current;
+    if (!paintedCanvas) {
+      return 0;
+    }
+
+    const paintedCtx = paintedCanvas.getContext('2d', { willReadFrequently: true });
+    if (!paintedCtx) {
+      return 0;
+    }
+
+    const imageData = paintedCtx.getImageData(0, 0, paintedCanvas.width, paintedCanvas.height);
+    const data = imageData.data;
+    const centerX = Math.round(Math.max(0, Math.min(1, u)) * (paintedCanvas.width - 1));
+    const centerY = Math.round((1 - Math.max(0, Math.min(1, v))) * (paintedCanvas.height - 1));
+    const radius = Math.max(1, settings.size);
+    const depthDirection = settings.mode === 'push' ? 1 : -1;
+    const normalizedStep = settings.depthAmount * settings.strength * 0.01;
+    const minX = Math.max(0, Math.floor(centerX - radius));
+    const maxX = Math.min(paintedCanvas.width - 1, Math.ceil(centerX + radius));
+    const minY = Math.max(0, Math.floor(centerY - radius));
+    const maxY = Math.min(paintedCanvas.height - 1, Math.ceil(centerY + radius));
+    let changedPixelCount = 0;
+
+    for (let py = minY; py <= maxY; py++) {
+      for (let px = minX; px <= maxX; px++) {
+        const dist = Math.hypot(px - centerX, py - centerY);
+        const normalizedDistance = dist / radius;
+        const brushInfluence = getBrushInfluence(normalizedDistance, settings.softness);
+        if (brushInfluence <= 0) {
+          continue;
+        }
+
+        const pixelIndex = (py * paintedCanvas.width + px) * 4;
+        const currentValue = data[pixelIndex] / 255;
+        const nextValue = clampDepthSample(currentValue + (normalizedStep * brushInfluence * depthDirection));
+
+        if (Math.abs(nextValue - currentValue) < 0.0005) {
+          continue;
+        }
+
+        const encodedValue = Math.round(nextValue * 255);
+        data[pixelIndex] = encodedValue;
+        data[pixelIndex + 1] = encodedValue;
+        data[pixelIndex + 2] = encodedValue;
+        data[pixelIndex + 3] = 255;
+        changedPixelCount += 1;
+      }
+    }
+
+    if (changedPixelCount === 0) {
+      return 0;
+    }
+
+    paintedCtx.putImageData(imageData, 0, 0);
+    depthPixelDataRef.current = { data: imageData.data, width: paintedCanvas.width, height: paintedCanvas.height };
+    hasPendingDepthPaintSyncRef.current = true;
+
+    rebuildProjectionSurfaceMesh(
+      depthPixelDataRef.current,
+      currentParams,
+      paintedCanvas.width,
+      paintedCanvas.height,
+      showProjectionMesh,
+      projectionMeshOpacityPercent
+    );
+
+    if (pointsRef.current.length > 0) {
+      applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
+    }
+
+    return changedPixelCount;
+  };
+
   const getActiveDepthSample = (point: PointData, currentParams: SamplingParams) => {
     const sampledDepth = sampleDepthFromUv(point.u, point.v);
     if (sampledDepth !== null) {
@@ -503,21 +637,31 @@ export default function App() {
     return getStoredDepthSample(point, currentParams);
   };
 
+  const getClampedPointZOffset = (point: PointData, currentParams: SamplingParams, nextOffset: number) => {
+    const depthSample = getActiveDepthSample(point, currentParams);
+    const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
+    const baseDepthZ = adjustedDepth * currentParams.depthScale;
+    return THREE.MathUtils.clamp(nextOffset, -baseDepthZ, currentParams.depthScale - baseDepthZ);
+  };
+
   const getRenderedPointZ = (point: PointData, currentParams: SamplingParams) => {
     const depthSample = getActiveDepthSample(point, currentParams);
     const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
-    return (adjustedDepth * currentParams.depthScale) + (point.zOffset ?? 0);
+    const clampedOffset = getClampedPointZOffset(point, currentParams, point.zOffset ?? 0);
+    return (adjustedDepth * currentParams.depthScale) + clampedOffset;
   };
 
   const materializePointsForDepth = (targetPoints: PointData[], currentParams: SamplingParams) => {
     return targetPoints.map((point) => {
       const depthSample = getActiveDepthSample(point, currentParams);
+      const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
+      const clampedOffset = getClampedPointZOffset(point, currentParams, point.zOffset ?? 0);
 
       return {
         ...point,
         depthSample,
-        zOffset: point.zOffset ?? 0,
-        z: ((currentParams.invertDepth ? 1 - depthSample : depthSample) * currentParams.depthScale) + (point.zOffset ?? 0)
+        zOffset: clampedOffset,
+        z: (adjustedDepth * currentParams.depthScale) + clampedOffset
       };
     });
   };
@@ -536,6 +680,9 @@ export default function App() {
     version: session.version,
     sourceImg: session.sourceImg,
     depthImg: session.depthImg,
+    paintedDepthImg: session.paintedDepthImg,
+    showDepthOverlay: session.showDepthOverlay ?? false,
+    depthOverlayOpacityPercent: session.depthOverlayOpacityPercent ?? 45,
     camera: session.camera
       ? {
           position: [...session.camera.position] as [number, number, number],
@@ -586,6 +733,9 @@ export default function App() {
       version: SESSION_STORAGE_VERSION,
       sourceImg,
       depthImg,
+      paintedDepthImg,
+      showDepthOverlay,
+      depthOverlayOpacityPercent,
       camera: getCameraSnapshot(),
       points: syncedPoints,
       stats: {
@@ -647,6 +797,9 @@ export default function App() {
   const applyPersistedSession = async (restoredSession: PersistedSession) => {
     setSourceImg(restoredSession.sourceImg ?? null);
     setDepthImg(restoredSession.depthImg ?? null);
+    setPaintedDepthImg(restoredSession.paintedDepthImg ?? null);
+    setShowDepthOverlay(restoredSession.showDepthOverlay ?? false);
+    setDepthOverlayOpacityPercent(restoredSession.depthOverlayOpacityPercent ?? 45);
     setParams(restoredSession.params);
     paramsRef.current = restoredSession.params;
     setMaxPointSize(restoredSession.maxPointSize);
@@ -714,11 +867,22 @@ export default function App() {
       try {
         const [sourceImage, depthImage] = await Promise.all([
           loadImageForSession(restoredSession.sourceImg),
-          loadImageForSession(restoredSession.depthImg)
+          loadImageForSession(restoredSession.paintedDepthImg ?? restoredSession.depthImg)
         ]);
 
+        const canvas = document.createElement('canvas');
+        canvas.width = sourceImage.naturalWidth;
+        canvas.height = sourceImage.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('Could not get canvas context for restored depth image');
+        }
+
+        ctx.drawImage(depthImage, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
         rebuildProjectionSurfaceMesh(
-          depthImage,
+          { data: imageData.data, width: canvas.width, height: canvas.height },
           restoredSession.params,
           sourceImage.naturalWidth,
           sourceImage.naturalHeight,
@@ -830,9 +994,27 @@ export default function App() {
     setIsSessionDirty(false);
   };
 
+  const downloadSessionFile = (session: PersistedSession, fileName?: string) => {
+    const targetFileName = fileName ?? sessionFileName ?? 'illuminated-session.json';
+    const blob = new Blob([`${JSON.stringify(session, null, 2)}\n`], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = targetFileName;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    setSessionFileName(targetFileName);
+    lastSavedSessionFingerprintRef.current = getSessionFingerprint(session);
+    setIsSessionDirty(false);
+  };
+
   const handleSaveSessionToFile = async (saveAs: boolean = false) => {
     if (!supportsFileSessionSave()) {
-      setStatus('Notice: File-based session save needs a Chromium browser with File System Access support');
+      const session = createPersistedSession();
+      const fallbackFileName = saveAs || !sessionFileName ? 'illuminated-session.json' : sessionFileName;
+      downloadSessionFile(session, fallbackFileName ?? undefined);
+      setStatus(`Session downloaded as ${fallbackFileName}`);
       return;
     }
 
@@ -868,7 +1050,7 @@ export default function App() {
 
   const handleLoadSessionFromFile = async () => {
     if (!supportsFileSessionSave()) {
-      setStatus('Notice: File-based session load needs a Chromium browser with File System Access support');
+      sessionFileInputRef.current?.click();
       return;
     }
 
@@ -905,6 +1087,33 @@ export default function App() {
     }
   };
 
+  const handleSessionFileInputChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const rawSession = await file.text();
+      const restoredSession = JSON.parse(rawSession) as PersistedSession;
+
+      if (restoredSession.version !== SESSION_STORAGE_VERSION) {
+        setStatus('Notice: Selected session file uses an older format');
+        return;
+      }
+
+      const restoredPoints = await applyPersistedSession(restoredSession);
+      sessionFileHandleRef.current = null;
+      setHasSessionFileHandle(false);
+      setSessionFileName(file.name);
+      lastSavedSessionFingerprintRef.current = getSessionFingerprint(restoredSession);
+      setIsSessionDirty(false);
+      setStatus(restoredPoints.length > 0 ? `Session loaded from ${file.name}` : `Loaded empty session from ${file.name}`);
+    } catch (error) {
+      console.error(error);
+      setStatus('Error: Session file load failed');
+    }
+  };
+
   const handleForgetSessionFile = () => {
     sessionFileHandleRef.current = null;
     setHasSessionFileHandle(false);
@@ -924,6 +1133,7 @@ export default function App() {
   }, [
     sourceImg,
     depthImg,
+    paintedDepthImg,
     points,
     stats,
     params,
@@ -1043,6 +1253,45 @@ export default function App() {
       
       const settings = brushSettingsRef.current;
       const indicator = brushIndicatorRef.current;
+
+      if (settings.mode === 'push' || settings.mode === 'pull') {
+        const projMesh = sceneRef.current.mesh;
+
+        if (indicator && settings.enabled && !isAltNavigationRef.current) {
+          indicator.visible = true;
+          indicator.scale.set(settings.size, settings.size, 1);
+          if (projMesh) {
+            raycasterRef.current.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), sceneRef.current.camera);
+            const meshHits = raycasterRef.current.intersectObject(projMesh);
+            if (meshHits.length > 0) {
+              indicator.position.copy(meshHits[0].point);
+              indicator.lookAt(sceneRef.current.camera.position);
+            }
+          }
+        } else if (indicator) {
+          indicator.visible = false;
+        }
+
+        if (!settings.enabled || isAltNavigationRef.current) return;
+        if (!isBrushingRef.current && !forcePaint) return;
+        if (!projMesh || !depthPixelDataRef.current) {
+          setStatus('Notice: Load or generate a depth map to paint depth');
+          return;
+        }
+
+        raycasterRef.current.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), sceneRef.current.camera);
+        const meshHits = raycasterRef.current.intersectObject(projMesh);
+        const hitUv = meshHits[0]?.uv;
+        if (!hitUv) {
+          return;
+        }
+
+        const changedPixelCount = paintDepthAtUv(hitUv.x, hitUv.y, settings, paramsRef.current);
+        if (changedPixelCount > 0 && forcePaint) {
+          setStatus(`Painted depth ${settings.mode === 'push' ? 'out' : 'in'} across ${changedPixelCount} pixels`);
+        }
+        return;
+      }
 
       // ── Paint / Stamp modes: raycast against the projection surface mesh ──────
       if (settings.mode === 'paint' || settings.mode === 'stamp') {
@@ -1334,7 +1583,7 @@ export default function App() {
       }
 
       // ONLY process point physics if we are actually clicking (or forced)
-      const nearestBrushHit = findNearestHit(selectionHits, pointer.x, pointer.y, 18);
+      const nearestBrushHit = findNearestHit(selectionHits, pointer.x, pointer.y, Math.max(settings.size, 18));
 
       if (nearestBrushHit && settings.enabled && !isAltNavigationRef.current && (isBrushingRef.current || forcePaint)) {
         const pointCloud = sceneRef.current.points;
@@ -1348,7 +1597,7 @@ export default function App() {
         const worldPos = new THREE.Vector3();
         const selectedIndices: number[] = [];
         let affectedPointCount = 0;
-        const depthDelta = params.depthScale * settings.depthAmount;
+        const depthDelta = paramsRef.current.depthScale * settings.depthAmount * settings.strength * 0.02;
         
         for (let i = 0; i < visibilityAttr.count; i++) {
           pos.fromBufferAttribute(positionAttr, i);
@@ -1358,25 +1607,33 @@ export default function App() {
           const normalizedDistance = dist / settings.size;
           const brushInfluence = getBrushInfluence(normalizedDistance, settings.softness);
 
-          const pointNoise = Math.abs(
-            Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
-          );
-
-          if (!shouldApplyBrushEffect(normalizedDistance, settings.softness, settings.strength, pointNoise)) {
-            continue;
-          }
-
           if (settings.mode === 'select') {
+            const pointNoise = Math.abs(
+              Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
+            );
+
+            if (!shouldApplyBrushEffect(normalizedDistance, settings.softness, settings.strength, pointNoise)) {
+              continue;
+            }
+
             selectedIndices.push(i);
             affectedPointCount += 1;
           } else if (settings.mode === 'push' || settings.mode === 'pull') {
+            if (brushInfluence <= 0) {
+              continue;
+            }
+
             const depthDirection = settings.mode === 'push' ? 1 : -1;
             const point = pointsRef.current[i];
             if (!point) {
               continue;
             }
 
-            point.zOffset = (point.zOffset ?? 0) + (depthDelta * brushInfluence * depthDirection);
+            point.zOffset = getClampedPointZOffset(
+              point,
+              paramsRef.current,
+              (point.zOffset ?? 0) + (depthDelta * brushInfluence * depthDirection)
+            );
             const nextZ = getRenderedPointZ(point, paramsRef.current);
             point.z = nextZ;
             positionAttr.setZ(i, nextZ);
@@ -1385,6 +1642,14 @@ export default function App() {
             }
             affectedPointCount += 1;
           } else {
+            const pointNoise = Math.abs(
+              Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
+            );
+
+            if (!shouldApplyBrushEffect(normalizedDistance, settings.softness, settings.strength, pointNoise)) {
+              continue;
+            }
+
             visibilityAttr.setX(i, settings.mode === 'hide' ? 0.0 : 1.0);
             affectedPointCount += 1;
           }
@@ -1449,6 +1714,45 @@ export default function App() {
     };
 
     const handleMouseDown = (e: MouseEvent) => {
+      if (isPickingPointColorRef.current && e.button === 0 && !e.altKey) {
+        e.preventDefault();
+        const pointer = getCanvasPointer(e.clientX, e.clientY);
+        if (!pointer) {
+          setIsPickingPointColor(false);
+          return;
+        }
+
+        let sampledHexColor: string | null = null;
+        const nearestHit = findNearestHit(getVisibleProjectedPointIndices(), pointer.x, pointer.y, 16);
+        if (nearestHit) {
+          const sampledPoint = pointsRef.current[nearestHit.index];
+          if (sampledPoint) {
+            sampledHexColor = rgbToHex(sampledPoint);
+          }
+        }
+
+        if (!sampledHexColor && sceneRef.current?.mesh) {
+          mouse.x = (pointer.x / pointer.width) * 2 - 1;
+          mouse.y = -(pointer.y / pointer.height) * 2 + 1;
+          raycasterRef.current.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), sceneRef.current.camera);
+          const meshHits = raycasterRef.current.intersectObject(sceneRef.current.mesh);
+          const uv = meshHits[0]?.uv;
+          if (uv) {
+            sampledHexColor = sampleSourceColorFromUv(uv.x, uv.y);
+          }
+        }
+
+        setIsPickingPointColor(false);
+
+        if (!sampledHexColor) {
+          setStatus('Notice: Click a visible point or the projection mesh to sample a color');
+          return;
+        }
+
+        applySelectedPointColorCallbackRef.current?.(sampledHexColor);
+        return;
+      }
+
       if (selectionModeEnabledRef.current && e.button === 0 && !e.altKey) {
         e.preventDefault();
         const pointer = getCanvasPointer(e.clientX, e.clientY);
@@ -1519,10 +1823,16 @@ export default function App() {
       if (
         isBrushingRef.current &&
         finishedBrushMode !== 'select' &&
+        finishedBrushMode !== 'push' &&
+        finishedBrushMode !== 'pull' &&
         finishedBrushMode !== 'paint' &&
         finishedBrushMode !== 'stamp'
       ) {
         syncPointsFromSceneState();
+      }
+
+      if (hasPendingDepthPaintSyncRef.current) {
+        syncPaintedDepthImageState();
       }
 
       setIsBrushing(false);
@@ -1615,6 +1925,7 @@ export default function App() {
   }, [
     sourceImg,
     depthImg,
+    paintedDepthImg,
     points,
     stats,
     params,
@@ -1662,6 +1973,8 @@ export default function App() {
   useEffect(() => {
     if (!depthImg || !depthImgRef.current || !sourceImgRef.current) {
       depthPixelDataRef.current = null;
+      paintedDepthCanvasRef.current = null;
+      clearProjectionMesh();
       if (pointsRef.current.length > 0) {
         applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
       }
@@ -1684,6 +1997,23 @@ export default function App() {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       depthPixelDataRef.current = { data: imageData.data, width: canvas.width, height: canvas.height };
 
+      const paintedCanvas = document.createElement('canvas');
+      paintedCanvas.width = canvas.width;
+      paintedCanvas.height = canvas.height;
+      const paintedCtx = paintedCanvas.getContext('2d', { willReadFrequently: true });
+      if (!paintedCtx) return;
+      paintedCtx.putImageData(imageData, 0, 0);
+      paintedDepthCanvasRef.current = paintedCanvas;
+
+      rebuildProjectionSurfaceMesh(
+        { data: imageData.data, width: canvas.width, height: canvas.height },
+        paramsRef.current,
+        canvas.width,
+        canvas.height,
+        showProjectionMesh,
+        projectionMeshOpacityPercent
+      );
+
       if (pointsRef.current.length > 0) {
         applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
       }
@@ -1700,12 +2030,41 @@ export default function App() {
       depthImage.addEventListener('load', capture, { once: true });
       sourceImage.addEventListener('load', capture, { once: true });
     }
-  }, [depthImg, sourceImg]);
+  }, [depthImg, paintedDepthImg, sourceImg]);
 
   useEffect(() => {
     if (pointsRef.current.length === 0) return;
     applyPointSnapshot(pointsRef.current.map((point) => ({ ...point })));
   }, [params.depthScale, params.invertDepth, params.depthColorSpace]);
+
+  useEffect(() => {
+    if (!depthImg || !sourceImgRef.current || !depthPixelDataRef.current) return;
+
+    const sourceImage = sourceImgRef.current;
+    if (
+      !sourceImage.complete ||
+      sourceImage.naturalWidth === 0
+    ) {
+      return;
+    }
+
+    rebuildProjectionSurfaceMesh(
+      depthPixelDataRef.current,
+      params,
+      sourceImage.naturalWidth,
+      sourceImage.naturalHeight,
+      showProjectionMesh,
+      projectionMeshOpacityPercent
+    );
+  }, [
+    depthImg,
+    paintedDepthImg,
+    sourceImg,
+    params.depthScale,
+    params.invertDepth,
+    params.depthColorSpace,
+    params.xyScale
+  ]);
 
   // Toggle projection mesh wireframe visibility for debugging
   useEffect(() => {
@@ -1723,7 +2082,10 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (event) => {
       if (type === 'source') setSourceImg(event.target?.result as string);
-      else setDepthImg(event.target?.result as string);
+      else {
+        setDepthImg(event.target?.result as string);
+        setPaintedDepthImg(null);
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -1756,6 +2118,7 @@ export default function App() {
       const depthDataUrl = await getAutoDepthMap(sourceImgRef.current);
       if (depthDataUrl) {
         setDepthImg(depthDataUrl);
+        setPaintedDepthImg(null);
         setStatus('Success: Auto-depth generated');
       } else {
         setStatus('Notice: Auto-depth provider unavailable');
@@ -1841,11 +2204,20 @@ export default function App() {
     setStats((prev: { width: number; height: number; pointCount: number }) => ({ ...prev, pointCount: renderedPoints.length }));
   };
 
+  const getCurrentPaintedDepthSnapshot = () => {
+    if (paintedDepthCanvasRef.current) {
+      return paintedDepthCanvasRef.current.toDataURL('image/png');
+    }
+
+    return paintedDepthImg;
+  };
+
   const pushToHistory = () => {
     const currentSnapshot = createHistorySnapshot(
       sceneRef.current,
       pointsRef.current,
-      selectedPointIndicesRef.current
+      selectedPointIndicesRef.current,
+      getCurrentPaintedDepthSnapshot()
     );
     if (!currentSnapshot) return;
     
@@ -1859,13 +2231,14 @@ export default function App() {
     const currentSnapshot = createHistorySnapshot(
       sceneRef.current,
       pointsRef.current,
-      selectedPointIndicesRef.current
+      selectedPointIndicesRef.current,
+      getCurrentPaintedDepthSnapshot()
     );
     if (!currentSnapshot) return;
     setRedoStack((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
     const prevSnapshot = history[history.length - 1];
-    applyHistorySnapshot(prevSnapshot, applyPointSnapshot, setSelectedPointIndices);
+    applyHistorySnapshot(prevSnapshot, applyPointSnapshot, setSelectedPointIndices, setPaintedDepthImg);
     
     setHistory((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
@@ -1876,13 +2249,14 @@ export default function App() {
     const currentSnapshot = createHistorySnapshot(
       sceneRef.current,
       pointsRef.current,
-      selectedPointIndicesRef.current
+      selectedPointIndicesRef.current,
+      getCurrentPaintedDepthSnapshot()
     );
     if (!currentSnapshot) return;
     setHistory((prev: HistorySnapshot[]) => [...prev, currentSnapshot]);
 
     const nextSnapshot = redoStack[redoStack.length - 1];
-    applyHistorySnapshot(nextSnapshot, applyPointSnapshot, setSelectedPointIndices);
+    applyHistorySnapshot(nextSnapshot, applyPointSnapshot, setSelectedPointIndices, setPaintedDepthImg);
 
     setRedoStack((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
@@ -1943,6 +2317,45 @@ export default function App() {
     setStatus(`Cleared ${currentAddedPointCount} added point${currentAddedPointCount === 1 ? '' : 's'}`);
   };
 
+  const applySelectedPointColor = (hexColor: string) => {
+    if (selectedPointIndicesRef.current.length === 0) {
+      setStatus('Notice: Select at least one point to change its color');
+      return;
+    }
+
+    const parsedColor = parseHexColor(hexColor);
+    if (!parsedColor) {
+      setStatus('Notice: Enter a valid 6-digit hex color');
+      return;
+    }
+
+    const selectedSet = new Set(selectedPointIndicesRef.current);
+    const hasColorChange = selectedPointIndicesRef.current.some((index) => {
+      const point = pointsRef.current[index];
+      return !!point && (
+        point.r !== parsedColor.r ||
+        point.g !== parsedColor.g ||
+        point.b !== parsedColor.b
+      );
+    });
+
+    if (!hasColorChange) {
+      setStatus('Notice: Selected points already use that color');
+      return;
+    }
+
+    pushToHistory();
+    const nextPoints = pointsRef.current.map((point, index) => (
+      selectedSet.has(index)
+        ? { ...point, r: parsedColor.r, g: parsedColor.g, b: parsedColor.b }
+        : { ...point }
+    ));
+    applyPointSnapshot(nextPoints);
+    setStatus(`Applied ${hexColor.toUpperCase()} to ${selectedSet.size} selected point${selectedSet.size === 1 ? '' : 's'}`);
+  };
+
+  applySelectedPointColorCallbackRef.current = applySelectedPointColor;
+
   // Keep the callback ref up to date so the Three.js closure can call addNewPoints
   useEffect(() => { addNewPointsCallbackRef.current = addNewPoints; });
 
@@ -1980,9 +2393,9 @@ export default function App() {
       });
 
       // Build / rebuild projection surface mesh for paint/stamp modes
-      if (depthImgRef.current && depthImg) {
+      if (depthPixelDataRef.current && depthImg) {
         rebuildProjectionSurfaceMesh(
-          depthImgRef.current,
+          depthPixelDataRef.current,
           params,
           sourceImgRef.current.naturalWidth,
           sourceImgRef.current.naturalHeight,
@@ -2054,6 +2467,7 @@ export default function App() {
   };
 
   const fileSessionSaveSupported = typeof window !== 'undefined' && supportsFileSessionSave();
+  const effectiveDepthOverlaySrc = paintedDepthImg ?? depthImg;
 
   return (
     <div className="w-full h-screen bg-tech-bg text-tech-text font-sans flex flex-col overflow-hidden">
@@ -2076,15 +2490,13 @@ export default function App() {
           </div>
           <button
             onClick={() => handleSaveSessionToFile(!hasSessionFileHandle)}
-            disabled={!fileSessionSaveSupported}
-            className={`px-3 py-1.5 border text-[10px] font-mono transition-colors uppercase tracking-widest disabled:opacity-30 ${isSessionDirty ? 'border-tech-accent text-tech-accent hover:bg-tech-accent/10' : 'border-tech-subtle-border hover:bg-tech-border'}`}
+            className={`px-3 py-1.5 border text-[10px] font-mono transition-colors uppercase tracking-widest ${isSessionDirty ? 'border-tech-accent text-tech-accent hover:bg-tech-accent/10' : 'border-tech-subtle-border hover:bg-tech-border'}`}
           >
             {hasSessionFileHandle ? 'Save Session' : 'Save Session As'}
           </button>
           <button
             onClick={handleLoadSessionFromFile}
-            disabled={!fileSessionSaveSupported}
-            className="px-3 py-1.5 border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest disabled:opacity-30"
+            className="px-3 py-1.5 border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest"
           >
             Load Session
           </button>
@@ -2099,6 +2511,9 @@ export default function App() {
             onClick={() => {
               setSourceImg(null);
               setDepthImg(null);
+              setPaintedDepthImg(null);
+              setShowDepthOverlay(false);
+              setDepthOverlayOpacityPercent(45);
               setPoints([]);
               pointsRef.current = [];
               setActiveTool('visibility');
@@ -2148,6 +2563,8 @@ export default function App() {
           brushStrengthPercent={brushStrengthPercent}
           depthAction={depthAction}
           depthImg={depthImg}
+          showDepthOverlay={showDepthOverlay}
+          depthOverlayOpacityPercent={depthOverlayOpacityPercent}
           handleAutoDepth={handleAutoDepth}
           handleFileChange={handleFileChange}
           handleGenerate={handleGenerate}
@@ -2164,9 +2581,13 @@ export default function App() {
           redoStackLength={redoStack.length}
           restoreSavedSelection={restoreSavedSelection}
           restoreSelectedPoints={restoreSelectedPoints}
+          applySelectedPointColor={applySelectedPointColor}
           saveCurrentSelection={saveCurrentSelection}
           savedSelections={savedSelections}
+          isPickingPointColor={isPickingPointColor}
           selectedAddedPointCount={selectedAddedPointCount}
+          selectedPointColorHex={selectedPointColorHex}
+          selectedPointColorMixed={selectedPointColorMixed}
           selectedPointCount={selectedPointCount}
           selectionModeEnabled={selectionModeEnabled}
           setActiveTool={setActiveTool}
@@ -2174,11 +2595,14 @@ export default function App() {
           setAddAppearanceSource={setAddAppearanceSource}
           isPickingCloneSource={isPickingCloneSource}
           setIsPickingCloneSource={setIsPickingCloneSource}
+          setIsPickingPointColor={setIsPickingPointColor}
           setBrushSettings={setBrushSettings}
           setBrushDepthPercent={setBrushDepthPercent}
           setBrushSoftnessPercent={setBrushSoftnessPercent}
           setBrushStrengthPercent={setBrushStrengthPercent}
           setDepthAction={setDepthAction}
+          setShowDepthOverlay={setShowDepthOverlay}
+          setDepthOverlayOpacityPercent={setDepthOverlayOpacityPercent}
           setParams={setParams}
           setSelectedPointIndices={setSelectedPointIndices}
           setShowPointIndices={setShowPointIndices}
@@ -2204,6 +2628,15 @@ export default function App() {
           {/* Main 3D Viewport - Takes most space */}
           <div className="flex-1 relative border border-tech-border rounded overflow-hidden bg-black flex flex-col shadow-inner min-h-0">
             <div className="absolute top-3 left-4 z-10 mono-label opacity-40 pointer-events-none tracking-[0.2em]">3D // SPATIAL_VISUALIZER</div>
+
+            {showDepthOverlay && effectiveDepthOverlaySrc && (
+              <img
+                src={effectiveDepthOverlaySrc}
+                alt="depth overlay"
+                className="absolute inset-0 z-0 h-full w-full object-contain pointer-events-none select-none"
+                style={{ opacity: depthOverlayOpacityPercent / 100 }}
+              />
+            )}
             
             {/* Stats Overlay */}
             <div className="absolute top-3 right-4 z-10 flex flex-col items-end pointer-events-none gap-1 bg-black/40 backdrop-blur-sm p-1 px-2 rounded border border-tech-border/30">
@@ -2215,7 +2648,7 @@ export default function App() {
             </div>
 
             {/* Three.js Canvas */}
-            <div ref={canvasRef} className={`flex-1 w-full h-full ${selectionModeEnabled ? 'cursor-default' : brushSettings.enabled ? 'cursor-none' : 'cursor-move'} bg-[radial-gradient(#1a1a1a_1.2px,transparent_1.2px)] [background-size:24px_24px]`} />
+            <div ref={canvasRef} className={`relative z-[1] flex-1 w-full h-full ${selectionModeEnabled ? 'cursor-default' : brushSettings.enabled ? 'cursor-none' : 'cursor-move'} ${showDepthOverlay && effectiveDepthOverlaySrc ? 'bg-transparent' : 'bg-[radial-gradient(#1a1a1a_1.2px,transparent_1.2px)] [background-size:24px_24px]'}`} />
 
             {selectionRect && (
               <div
@@ -2328,8 +2761,14 @@ export default function App() {
 
       {/* Hidden Assets */}
       <div className="hidden">
+        <input
+          ref={sessionFileInputRef}
+          type="file"
+          accept=".json,application/json,text/json"
+          onChange={handleSessionFileInputChange}
+        />
         <img ref={sourceImgRef} src={sourceImg || undefined} alt="hidden source" />
-        <img ref={depthImgRef} src={depthImg || undefined} alt="hidden depth" />
+        <img ref={depthImgRef} src={(paintedDepthImg ?? depthImg) || undefined} alt="hidden depth" />
       </div>
     </div>
   );

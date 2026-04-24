@@ -28,22 +28,26 @@ const syncPointsFromScene = (
 export const createHistorySnapshot = (
   sceneRef: SceneRefs | null,
   currentPoints: PointData[],
-  selectedPointIndices: number[]
+  selectedPointIndices: number[],
+  paintedDepthImg?: string | null
 ): HistorySnapshot | null => {
   if (currentPoints.length === 0) return null;
 
   return {
     points: syncPointsFromScene(sceneRef, currentPoints),
-    selectedPointIndices: [...selectedPointIndices]
+    selectedPointIndices: [...selectedPointIndices],
+    paintedDepthImg: paintedDepthImg ?? null
   };
 };
 
 export const applyHistorySnapshot = (
   snapshot: HistorySnapshot,
   applyPoints: (points: PointData[]) => void,
-  applySelection: (selectedPointIndices: number[]) => void
+  applySelection: (selectedPointIndices: number[]) => void,
+  applyPaintedDepthImg?: (paintedDepthImg: string | null) => void
 ) => {
   const nextPoints = clonePoints(snapshot.points);
+  applyPaintedDepthImg?.(snapshot.paintedDepthImg ?? null);
   applyPoints(nextPoints);
   applySelection(snapshot.selectedPointIndices.filter((index) => index >= 0 && index < nextPoints.length));
 };

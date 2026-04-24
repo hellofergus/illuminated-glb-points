@@ -40,6 +40,12 @@ export interface SamplingParams {
   aiPoints?: AIPoint[];
 }
 
+export type DepthPixelSource = {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+};
+
 export async function processImages(
   sourceImage: HTMLImageElement,
   depthImage: HTMLImageElement | null,
@@ -834,22 +840,13 @@ export async function getAutoDepthMap(image: HTMLImageElement): Promise<string |
  *   z = depthValue * depthScale
  */
 export function buildProjectionMesh(
-  depthImage: HTMLImageElement,
+  depthSource: DepthPixelSource,
   params: SamplingParams,
   sourceWidth: number,
   sourceHeight: number
 ): THREE.Mesh {
   const meshStep = 4; // 1 vertex per 4 pixels — enough detail without being heavy
-
-  const canvas = document.createElement('canvas');
-  // Use source image dimensions — processImages does the same: draws depth scaled to source size
-  canvas.width = sourceWidth;
-  canvas.height = sourceHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Could not get 2D context for projection mesh');
-  // Draw depth image stretched to source dimensions, exactly matching processImages coordinate space
-  ctx.drawImage(depthImage, 0, 0, sourceWidth, sourceHeight);
-  const depthData = ctx.getImageData(0, 0, sourceWidth, sourceHeight).data;
+  const depthData = depthSource.data;
 
   const srgbToLinear = (value: number) => {
     if (value <= 0.04045) {
@@ -878,9 +875,9 @@ export function buildProjectionMesh(
     for (let col = 0; col < cols; col++) {
       const px = col * meshStep;
       const py = row * meshStep;
-      const safeX = Math.min(px, sourceWidth - 1);
-      const safeY = Math.min(py, sourceHeight - 1);
-      const pi = (safeY * sourceWidth + safeX) * 4;
+      const safeX = Math.min(px, depthSource.width - 1);
+      const safeY = Math.min(py, depthSource.height - 1);
+      const pi = (safeY * depthSource.width + safeX) * 4;
 
       let depthVal = normalizeDepthValue(depthData[pi] / 255);
       if (params.invertDepth) depthVal = 1 - depthVal;

@@ -22,6 +22,7 @@ type ControlSidebarProps = {
   activeTool: ActiveTool;
   addAction: AddAction;
   addAppearanceSource: AddAppearanceSource;
+  applySelectedPointColor: (hexColor: string) => void;
   addedPointCount: number;
   cloneSourceIndex: number | null;
   brushSettings: BrushSettings;
@@ -29,6 +30,7 @@ type ControlSidebarProps = {
   brushSoftnessPercent: number;
   brushStrengthPercent: number;
   depthAction: DepthAction;
+  depthOverlayOpacityPercent: number;
   depthImg: string | null;
   handleAutoDepth: () => void;
   handleFileChange: (e: React.ChangeEvent<HTMLInputElement>, type: 'source' | 'depth') => void;
@@ -49,19 +51,26 @@ type ControlSidebarProps = {
   saveCurrentSelection: () => void;
   savedSelections: SavedSelection[];
   isPickingCloneSource: boolean;
+  isPickingPointColor: boolean;
   selectedAddedPointCount: number;
+  selectedPointColorHex: string | null;
+  selectedPointColorMixed: boolean;
   selectedPointCount: number;
   selectionModeEnabled: boolean;
+  showDepthOverlay: boolean;
   setActiveTool: React.Dispatch<React.SetStateAction<ActiveTool>>;
   setAddAction: React.Dispatch<React.SetStateAction<AddAction>>;
   setAddAppearanceSource: React.Dispatch<React.SetStateAction<AddAppearanceSource>>;
   setIsPickingCloneSource: (value: boolean) => void;
+  setIsPickingPointColor: (value: boolean) => void;
   setBrushSettings: React.Dispatch<React.SetStateAction<BrushSettings>>;
   setBrushDepthPercent: (percent: number) => void;
   setBrushSoftnessPercent: (percent: number) => void;
   setBrushStrengthPercent: (percent: number) => void;
   setDepthAction: React.Dispatch<React.SetStateAction<DepthAction>>;
+  setDepthOverlayOpacityPercent: (value: number) => void;
   setParams: React.Dispatch<React.SetStateAction<SamplingParams>>;
+  setShowDepthOverlay: (value: boolean) => void;
   setSelectedPointIndices: React.Dispatch<React.SetStateAction<number[]>>;
   setShowPointIndices: React.Dispatch<React.SetStateAction<boolean>>;
   setToolInteractionMode: React.Dispatch<React.SetStateAction<ToolInteractionMode>>;
@@ -86,6 +95,7 @@ export function ControlSidebar({
   activeTool,
   addAction,
   addAppearanceSource,
+  applySelectedPointColor,
   addedPointCount,
   cloneSourceIndex,
   brushSettings,
@@ -93,6 +103,7 @@ export function ControlSidebar({
   brushSoftnessPercent,
   brushStrengthPercent,
   depthAction,
+  depthOverlayOpacityPercent,
   depthImg,
   handleAutoDepth,
   handleFileChange,
@@ -113,19 +124,26 @@ export function ControlSidebar({
   saveCurrentSelection,
   savedSelections,
   isPickingCloneSource,
+  isPickingPointColor,
   selectedAddedPointCount,
+  selectedPointColorHex,
+  selectedPointColorMixed,
   selectedPointCount,
   selectionModeEnabled,
+  showDepthOverlay,
   setActiveTool,
   setAddAction,
   setAddAppearanceSource,
   setIsPickingCloneSource,
+  setIsPickingPointColor,
   setBrushSettings,
   setBrushDepthPercent,
   setBrushSoftnessPercent,
   setBrushStrengthPercent,
   setDepthAction,
+  setDepthOverlayOpacityPercent,
   setParams,
+  setShowDepthOverlay,
   setSelectedPointIndices,
   setShowPointIndices,
   setToolInteractionMode,
@@ -145,6 +163,12 @@ export function ControlSidebar({
   showProjectionMesh,
   setShowProjectionMesh
 }: ControlSidebarProps) {
+  const [selectedPointColorDraft, setSelectedPointColorDraft] = React.useState(selectedPointColorHex ?? '#FFFFFF');
+
+  React.useEffect(() => {
+    setSelectedPointColorDraft(selectedPointColorHex ?? '#FFFFFF');
+  }, [selectedPointColorHex]);
+
   return (
     <aside className="w-[320px] border-r border-tech-border bg-tech-sidebar p-6 flex flex-col gap-8 overflow-y-auto scrollbar-hide">
       <section className="space-y-4">
@@ -497,6 +521,45 @@ export function ControlSidebar({
                   </button>
                 </div>
 
+                {selectedPointCount > 0 && (
+                  <div className="space-y-3 border-t border-tech-border/30 pt-3">
+                    <div className="flex items-center justify-between">
+                      <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Color Attribute</span>
+                      <span className="mono-value text-[9px] text-tech-accent font-mono">
+                        {selectedPointColorMixed ? 'MIXED' : (selectedPointColorHex ?? 'UNSET')}
+                      </span>
+                    </div>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="color"
+                        value={selectedPointColorDraft}
+                        onChange={(e) => setSelectedPointColorDraft(e.target.value.toUpperCase())}
+                        className="h-9 w-12 cursor-pointer rounded border border-tech-border bg-transparent p-1"
+                      />
+                      <input
+                        type="text"
+                        value={selectedPointColorDraft}
+                        onChange={(e) => setSelectedPointColorDraft(e.target.value.toUpperCase())}
+                        placeholder="#RRGGBB"
+                        className="flex-1 bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text uppercase focus:border-tech-accent outline-none"
+                      />
+                    </div>
+                    <button
+                      onClick={() => applySelectedPointColor(selectedPointColorDraft)}
+                      className="w-full py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent transition-all"
+                    >
+                      Apply Color To Selected
+                    </button>
+                    <button
+                      onClick={() => setIsPickingPointColor(!isPickingPointColor)}
+                      className={`w-full py-1.5 border rounded text-[9px] uppercase font-mono transition-all ${isPickingPointColor ? 'border-tech-accent text-tech-accent bg-tech-accent/10' : 'border-tech-border hover:border-tech-accent'}`}
+                    >
+                      {isPickingPointColor ? 'Click Viewport To Pick' : 'Pick From Viewport'}
+                    </button>
+                    <div className="text-[8px] opacity-40 font-mono italic">Selected points keep their stored RGB attribute even though the viewport highlights selections with the selection overlay color.</div>
+                  </div>
+                )}
+
                 <div className="space-y-2 border-t border-tech-border/30 pt-3">
                   <div className="flex items-center justify-between">
                     <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Stored Selections</span>
@@ -599,7 +662,28 @@ export function ControlSidebar({
                 />
               </div>
 
-              <div className="text-[8px] opacity-40 font-mono italic">Depth painting is brush-only. Use it to push or pull point positions in Z without changing visibility.</div>
+              <div className="flex items-center justify-between py-1 border-t border-tech-border/30 pt-3">
+                <span className="mono-value opacity-50 font-mono text-[9px]">Depth Overlay</span>
+                <button
+                  onClick={() => setShowDepthOverlay(!showDepthOverlay)}
+                  className={`w-8 h-4 rounded-full transition-colors relative ${showDepthOverlay ? 'bg-tech-accent' : 'bg-tech-border'}`}
+                >
+                  <div className={`absolute top-1 w-2 h-2 rounded-full bg-white transition-all ${showDepthOverlay ? 'right-1' : 'left-1'}`} />
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Overlay Opacity</span><span>{depthOverlayOpacityPercent}%</span></div>
+                <input
+                  type="range" min="0" max="100" step="1"
+                  value={depthOverlayOpacityPercent}
+                  onChange={(e) => setDepthOverlayOpacityPercent(parseInt(e.target.value))}
+                  disabled={!showDepthOverlay || !depthImg}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer disabled:opacity-30"
+                />
+              </div>
+
+              <div className="text-[8px] opacity-40 font-mono italic">Depth painting is brush-only. Toggle the depth overlay to watch the grayscale map update behind the point cloud while you paint.</div>
             </div>
           )}
 
