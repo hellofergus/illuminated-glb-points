@@ -1,5 +1,5 @@
 import React from 'react';
-import { Upload, Box, Eraser, Paintbrush, Undo, Redo, Layers } from 'lucide-react';
+import { Upload, Box, Eraser, Paintbrush, Undo, Redo, Layers, ChevronRight } from 'lucide-react';
 import { SamplingParams } from '../processing/pointSampler';
 import { BrushMode } from '../processing/pointInteraction';
 import type { ActiveTool, AddAction, AddAppearanceSource, DepthAction, ToolInteractionMode, VisibilityBrushAction } from '../types/app';
@@ -22,6 +22,7 @@ type ControlSidebarProps = {
   activeTool: ActiveTool;
   addAction: AddAction;
   addAppearanceSource: AddAppearanceSource;
+  applyColorTransformPass: (palettes: { red: string; blue: string; white: string }) => void;
   applySelectedPointColor: (hexColor: string) => void;
   addedPointCount: number;
   cloneSourceIndex: number | null;
@@ -29,6 +30,11 @@ type ControlSidebarProps = {
   brushDepthPercent: number;
   brushSoftnessPercent: number;
   brushStrengthPercent: number;
+  colorTransformPalettes: {
+    red: string;
+    blue: string;
+    white: string;
+  };
   depthAction: DepthAction;
   depthOverlayOpacityPercent: number;
   depthImg: string | null;
@@ -58,6 +64,7 @@ type ControlSidebarProps = {
   selectedPointCount: number;
   selectionModeEnabled: boolean;
   showDepthOverlay: boolean;
+  pointCount: number;
   setActiveTool: React.Dispatch<React.SetStateAction<ActiveTool>>;
   setAddAction: React.Dispatch<React.SetStateAction<AddAction>>;
   setAddAppearanceSource: React.Dispatch<React.SetStateAction<AddAppearanceSource>>;
@@ -91,10 +98,35 @@ type ControlSidebarProps = {
   setShowProjectionMesh: (value: boolean) => void;
 };
 
+type AccordionSectionProps = {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+};
+
+function AccordionSection({ title, children, defaultOpen = false }: AccordionSectionProps) {
+  const [isOpen, setIsOpen] = React.useState(defaultOpen);
+
+  return (
+    <section className="space-y-3 border border-tech-border/60 rounded bg-tech-bg/20 px-3 py-3">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+      >
+        <div className="mono-label text-tech-accent uppercase">{title}</div>
+        <ChevronRight className={`w-4 h-4 text-tech-accent transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+      </button>
+      {isOpen && <div className="space-y-4">{children}</div>}
+    </section>
+  );
+}
+
 export function ControlSidebar({
   activeTool,
   addAction,
   addAppearanceSource,
+  applyColorTransformPass,
   applySelectedPointColor,
   addedPointCount,
   cloneSourceIndex,
@@ -102,6 +134,7 @@ export function ControlSidebar({
   brushDepthPercent,
   brushSoftnessPercent,
   brushStrengthPercent,
+  colorTransformPalettes,
   depthAction,
   depthOverlayOpacityPercent,
   depthImg,
@@ -131,6 +164,7 @@ export function ControlSidebar({
   selectedPointCount,
   selectionModeEnabled,
   showDepthOverlay,
+  pointCount,
   setActiveTool,
   setAddAction,
   setAddAppearanceSource,
@@ -164,15 +198,19 @@ export function ControlSidebar({
   setShowProjectionMesh
 }: ControlSidebarProps) {
   const [selectedPointColorDraft, setSelectedPointColorDraft] = React.useState(selectedPointColorHex ?? '#FFFFFF');
+  const [colorTransformDrafts, setColorTransformDrafts] = React.useState(colorTransformPalettes);
 
   React.useEffect(() => {
     setSelectedPointColorDraft(selectedPointColorHex ?? '#FFFFFF');
   }, [selectedPointColorHex]);
 
+  React.useEffect(() => {
+    setColorTransformDrafts(colorTransformPalettes);
+  }, [colorTransformPalettes]);
+
   return (
     <aside className="w-[320px] border-r border-tech-border bg-tech-sidebar p-6 flex flex-col gap-8 overflow-y-auto scrollbar-hide">
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent uppercase">00 // Core Strategy</div>
+      <AccordionSection title="00 // Core Strategy" defaultOpen>
         <div className="grid grid-cols-5 gap-2">
           <button
             onClick={() => setParams({ ...params, samplingMode: 'grid' })}
@@ -205,10 +243,9 @@ export function ControlSidebar({
             <div className="font-mono text-[9px] mb-1">DOT</div>
           </button>
         </div>
-      </section>
+      </AccordionSection>
 
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent">01 // Input Assets</div>
+      <AccordionSection title="01 // Input Assets" defaultOpen>
         <div className="flex flex-col gap-3">
           <label className="block group cursor-pointer">
             <input type="file" className="hidden" onChange={(e) => handleFileChange(e, 'source')} />
@@ -274,10 +311,9 @@ export function ControlSidebar({
             <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Import existing points to brush</div>
           </div>
         </div>
-      </section>
+      </AccordionSection>
 
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent">02 // Sampling Logic</div>
+      <AccordionSection title="02 // Sampling Logic">
         <div className="space-y-4">
           <div>
             <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Threshold</span><span>{(params.brightnessThreshold * 100).toFixed(0)}%</span></div>
@@ -368,11 +404,9 @@ export function ControlSidebar({
             </button>
           </div>
         </div>
-      </section>
+      </AccordionSection>
 
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent uppercase">03 // Tool Stack</div>
-
+      <AccordionSection title="03 // Tool Stack" defaultOpen>
         <div className="space-y-3 p-3 bg-tech-header/50 border border-tech-border rounded">
           <div className="grid grid-cols-3 gap-2">
             <button
@@ -678,7 +712,7 @@ export function ControlSidebar({
                   type="range" min="0" max="100" step="1"
                   value={depthOverlayOpacityPercent}
                   onChange={(e) => setDepthOverlayOpacityPercent(parseInt(e.target.value))}
-                  disabled={!showDepthOverlay || !depthImg}
+                  disabled={!showDepthOverlay}
                   className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer disabled:opacity-30"
                 />
               </div>
@@ -851,10 +885,58 @@ export function ControlSidebar({
             </button>
           </div>
         </div>
-      </section>
+      </AccordionSection>
 
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent">05 // Coordinate Transform</div>
+      <AccordionSection title="04 // Color Transform" defaultOpen>
+        {pointCount > 0 ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Palette Families</span>
+              <span className="mono-value text-[9px] text-tech-accent font-mono">R / B / W</span>
+            </div>
+            <div className="space-y-2">
+              <div>
+                <div className="mono-value mb-1 font-mono text-[9px] opacity-50 uppercase">Red Palette</div>
+                <textarea
+                  value={colorTransformDrafts.red}
+                  onChange={(e) => setColorTransformDrafts((prev) => ({ ...prev, red: e.target.value.toUpperCase() }))}
+                  rows={2}
+                  className="w-full resize-none bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text uppercase focus:border-tech-accent outline-none"
+                />
+              </div>
+              <div>
+                <div className="mono-value mb-1 font-mono text-[9px] opacity-50 uppercase">Blue Palette</div>
+                <textarea
+                  value={colorTransformDrafts.blue}
+                  onChange={(e) => setColorTransformDrafts((prev) => ({ ...prev, blue: e.target.value.toUpperCase() }))}
+                  rows={2}
+                  className="w-full resize-none bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text uppercase focus:border-tech-accent outline-none"
+                />
+              </div>
+              <div>
+                <div className="mono-value mb-1 font-mono text-[9px] opacity-50 uppercase">White Palette</div>
+                <textarea
+                  value={colorTransformDrafts.white}
+                  onChange={(e) => setColorTransformDrafts((prev) => ({ ...prev, white: e.target.value.toUpperCase() }))}
+                  rows={2}
+                  className="w-full resize-none bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text uppercase focus:border-tech-accent outline-none"
+                />
+              </div>
+            </div>
+            <button
+              onClick={() => applyColorTransformPass(colorTransformDrafts)}
+              className="w-full py-1.5 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent transition-all"
+            >
+              Apply Color Transform Pass
+            </button>
+            <div className="text-[8px] opacity-40 font-mono italic">Enter comma-separated hex colors for each family. Each point is grouped to the nearest red, blue, or white family, then snapped to the nearest tone inside that family palette.</div>
+          </div>
+        ) : (
+          <div className="text-[8px] opacity-30 font-mono uppercase">Generate or import points to enable the color transform pass.</div>
+        )}
+      </AccordionSection>
+
+      <AccordionSection title="05 // Coordinate Transform">
         <div className="space-y-4">
           <div>
             <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Depth Scale</span><span>{params.depthScale.toFixed(1)}</span></div>
@@ -875,10 +957,9 @@ export function ControlSidebar({
             </button>
           </div>
         </div>
-      </section>
+      </AccordionSection>
 
-      <section className="space-y-4">
-        <div className="mono-label text-tech-accent uppercase">06 // Debug View</div>
+      <AccordionSection title="06 // Debug View">
         <div className="flex items-center justify-between py-1 border-b border-tech-border/30">
           <span className="mono-value opacity-50 font-mono">Point Index Labels</span>
           <button
@@ -889,7 +970,7 @@ export function ControlSidebar({
           </button>
         </div>
         <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Render numeric ids above every visible point</div>
-      </section>
+      </AccordionSection>
 
     </aside>
   );

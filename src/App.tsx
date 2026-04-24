@@ -55,6 +55,11 @@ type PersistedSession = {
   paintedDepthImg?: string | null;
   showDepthOverlay?: boolean;
   depthOverlayOpacityPercent?: number;
+  colorTransformPalettes?: {
+    red: string;
+    blue: string;
+    white: string;
+  };
   camera?: {
     position: [number, number, number];
     target: [number, number, number];
@@ -101,6 +106,11 @@ export default function App() {
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampBrushDepthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampSoftnessPercent = (percent: number) => Math.min(100, Math.max(0, percent));
+  const defaultColorTransformPalettes = {
+    red: '#7A1F1F, #B73737, #E88787',
+    blue: '#183A74, #2F61B8, #8FB0F1',
+    white: '#FFFFFF, #E5E5E5, #CFCFCF'
+  };
   const toHexChannel = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255).toString(16).padStart(2, '0').toUpperCase();
   const rgbToHex = (point: PointData) => `#${toHexChannel(point.r)}${toHexChannel(point.g)}${toHexChannel(point.b)}`;
 
@@ -121,12 +131,27 @@ export default function App() {
     };
   };
 
+  const parsePaletteInput = (value: string) => {
+    return value
+      .split(/[\n,;]+/)
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .map((token) => parseHexColor(token))
+      .filter((color): color is NonNullable<ReturnType<typeof parseHexColor>> => color !== null);
+  };
+
+  const getColorDistance = (
+    left: { r: number; g: number; b: number },
+    right: { r: number; g: number; b: number }
+  ) => Math.hypot(left.r - right.r, left.g - right.g, left.b - right.b);
+
   // UI State
   const [sourceImg, setSourceImg] = useState<string | null>(null);
   const [depthImg, setDepthImg] = useState<string | null>(null);
   const [paintedDepthImg, setPaintedDepthImg] = useState<string | null>(null);
   const [showDepthOverlay, setShowDepthOverlay] = useState(false);
   const [depthOverlayOpacityPercent, setDepthOverlayOpacityPercent] = useState<number>(45);
+  const [colorTransformPalettes, setColorTransformPalettes] = useState(defaultColorTransformPalettes);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAutoDepthLoading, setIsAutoDepthLoading] = useState(false);
   const [status, setStatus] = useState<string>('Ready');
@@ -683,6 +708,7 @@ export default function App() {
     paintedDepthImg: session.paintedDepthImg,
     showDepthOverlay: session.showDepthOverlay ?? false,
     depthOverlayOpacityPercent: session.depthOverlayOpacityPercent ?? 45,
+    colorTransformPalettes: session.colorTransformPalettes ?? defaultColorTransformPalettes,
     camera: session.camera
       ? {
           position: [...session.camera.position] as [number, number, number],
@@ -726,6 +752,17 @@ export default function App() {
     showPointIndices: session.showPointIndices
   });
 
+  const sessionHasMeaningfulContent = (session: PersistedSession | null | undefined) => {
+    if (!session) return false;
+
+    return Boolean(
+      session.sourceImg ||
+      session.depthImg ||
+      session.paintedDepthImg ||
+      (session.points?.length ?? 0) > 0
+    );
+  };
+
   const createPersistedSession = (): PersistedSession => {
     const syncedPoints = getSyncedPointsFromScene(pointsRef.current);
 
@@ -736,6 +773,7 @@ export default function App() {
       paintedDepthImg,
       showDepthOverlay,
       depthOverlayOpacityPercent,
+      colorTransformPalettes,
       camera: getCameraSnapshot(),
       points: syncedPoints,
       stats: {
@@ -800,6 +838,7 @@ export default function App() {
     setPaintedDepthImg(restoredSession.paintedDepthImg ?? null);
     setShowDepthOverlay(restoredSession.showDepthOverlay ?? false);
     setDepthOverlayOpacityPercent(restoredSession.depthOverlayOpacityPercent ?? 45);
+    setColorTransformPalettes(restoredSession.colorTransformPalettes ?? defaultColorTransformPalettes);
     setParams(restoredSession.params);
     paramsRef.current = restoredSession.params;
     setMaxPointSize(restoredSession.maxPointSize);
@@ -1164,6 +1203,7 @@ export default function App() {
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, canvasRef.current.clientWidth / canvasRef.current.clientHeight, 0.1, 5000);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(canvasRef.current.clientWidth, canvasRef.current.clientHeight);
     
@@ -1171,6 +1211,7 @@ export default function App() {
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
+    renderer.domElement.style.backgroundColor = 'transparent';
     
     const container = canvasRef.current;
     container.appendChild(renderer.domElement);
@@ -1916,7 +1957,15 @@ export default function App() {
     if (!hasRestoredSessionRef.current) return;
 
     const saveTimeout = window.setTimeout(() => {
-      persistSession(createPersistedSession());
+      const nextSession = createPersistedSession();
+      const existingRawSession = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      const existingSession = existingRawSession ? JSON.parse(existingRawSession) as PersistedSession : null;
+
+      if (!sessionHasMeaningfulContent(nextSession) && sessionHasMeaningfulContent(existingSession)) {
+        return;
+      }
+
+      persistSession(nextSession);
     }, 300);
 
     return () => {
@@ -2354,6 +2403,72 @@ export default function App() {
     setStatus(`Applied ${hexColor.toUpperCase()} to ${selectedSet.size} selected point${selectedSet.size === 1 ? '' : 's'}`);
   };
 
+  const applyColorTransformPass = (nextPalettes: { red: string; blue: string; white: string }) => {
+    if (pointsRef.current.length === 0) {
+      setStatus('Notice: Generate or import points before running a color transform pass');
+      return;
+    }
+
+    const parsedPalettes = {
+      red: parsePaletteInput(nextPalettes.red),
+      blue: parsePaletteInput(nextPalettes.blue),
+      white: parsePaletteInput(nextPalettes.white)
+    };
+
+    if (parsedPalettes.red.length === 0 || parsedPalettes.blue.length === 0 || parsedPalettes.white.length === 0) {
+      setStatus('Notice: Enter at least one valid hex color for red, blue, and white palettes');
+      return;
+    }
+
+    setColorTransformPalettes(nextPalettes);
+
+    const familyCounts = { red: 0, blue: 0, white: 0 };
+    let changedPointCount = 0;
+
+    const nextPoints = pointsRef.current.map((point) => {
+      const pointColor = { r: point.r, g: point.g, b: point.b };
+      const channelSpread = Math.max(
+        Math.abs(pointColor.r - pointColor.g),
+        Math.abs(pointColor.r - pointColor.b),
+        Math.abs(pointColor.g - pointColor.b)
+      );
+      const family: 'red' | 'blue' | 'white' = channelSpread < 0.08
+        ? 'white'
+        : pointColor.r >= pointColor.b
+          ? 'red'
+          : 'blue';
+
+      familyCounts[family] += 1;
+
+      const nearestTarget = parsedPalettes[family].reduce((bestTarget, candidateTarget) => {
+        return getColorDistance(pointColor, candidateTarget) < getColorDistance(pointColor, bestTarget)
+          ? candidateTarget
+          : bestTarget;
+      }, parsedPalettes[family][0]);
+
+      if (nearestTarget.r === point.r && nearestTarget.g === point.g && nearestTarget.b === point.b) {
+        return { ...point };
+      }
+
+      changedPointCount += 1;
+      return {
+        ...point,
+        r: nearestTarget.r,
+        g: nearestTarget.g,
+        b: nearestTarget.b
+      };
+    });
+
+    if (changedPointCount === 0) {
+      setStatus('Notice: The current palette pass would not change any point colors');
+      return;
+    }
+
+    pushToHistory();
+    applyPointSnapshot(nextPoints);
+    setStatus(`Color transform applied to ${changedPointCount} points [R:${familyCounts.red} B:${familyCounts.blue} W:${familyCounts.white}]`);
+  };
+
   applySelectedPointColorCallbackRef.current = applySelectedPointColor;
 
   // Keep the callback ref up to date so the Three.js closure can call addNewPoints
@@ -2468,6 +2583,14 @@ export default function App() {
 
   const fileSessionSaveSupported = typeof window !== 'undefined' && supportsFileSessionSave();
   const effectiveDepthOverlaySrc = paintedDepthImg ?? depthImg;
+  const depthOverlayCanvasStyle = showDepthOverlay && effectiveDepthOverlaySrc
+    ? {
+        backgroundImage: `linear-gradient(rgba(0, 0, 0, ${1 - (depthOverlayOpacityPercent / 100)}), rgba(0, 0, 0, ${1 - (depthOverlayOpacityPercent / 100)})), url(${effectiveDepthOverlaySrc})`,
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        backgroundSize: 'contain'
+      }
+    : undefined;
 
   return (
     <div className="w-full h-screen bg-tech-bg text-tech-text font-sans flex flex-col overflow-hidden">
@@ -2554,6 +2677,7 @@ export default function App() {
           activeTool={activeTool}
           addAction={addAction}
           addAppearanceSource={addAppearanceSource}
+          applyColorTransformPass={applyColorTransformPass}
           addedPointCount={addedPointCount}
           cloneSourceIndex={cloneSourceIndex}
           addPointSize={addPointSize}
@@ -2561,6 +2685,7 @@ export default function App() {
           brushDepthPercent={brushDepthPercent}
           brushSoftnessPercent={brushSoftnessPercent}
           brushStrengthPercent={brushStrengthPercent}
+          colorTransformPalettes={colorTransformPalettes}
           depthAction={depthAction}
           depthImg={depthImg}
           showDepthOverlay={showDepthOverlay}
@@ -2591,6 +2716,7 @@ export default function App() {
           selectedPointCount={selectedPointCount}
           selectionModeEnabled={selectionModeEnabled}
           setActiveTool={setActiveTool}
+          pointCount={points.length}
           setAddAction={setAddAction}
           setAddAppearanceSource={setAddAppearanceSource}
           isPickingCloneSource={isPickingCloneSource}
@@ -2628,15 +2754,6 @@ export default function App() {
           {/* Main 3D Viewport - Takes most space */}
           <div className="flex-1 relative border border-tech-border rounded overflow-hidden bg-black flex flex-col shadow-inner min-h-0">
             <div className="absolute top-3 left-4 z-10 mono-label opacity-40 pointer-events-none tracking-[0.2em]">3D // SPATIAL_VISUALIZER</div>
-
-            {showDepthOverlay && effectiveDepthOverlaySrc && (
-              <img
-                src={effectiveDepthOverlaySrc}
-                alt="depth overlay"
-                className="absolute inset-0 z-0 h-full w-full object-contain pointer-events-none select-none"
-                style={{ opacity: depthOverlayOpacityPercent / 100 }}
-              />
-            )}
             
             {/* Stats Overlay */}
             <div className="absolute top-3 right-4 z-10 flex flex-col items-end pointer-events-none gap-1 bg-black/40 backdrop-blur-sm p-1 px-2 rounded border border-tech-border/30">
@@ -2648,7 +2765,7 @@ export default function App() {
             </div>
 
             {/* Three.js Canvas */}
-            <div ref={canvasRef} className={`relative z-[1] flex-1 w-full h-full ${selectionModeEnabled ? 'cursor-default' : brushSettings.enabled ? 'cursor-none' : 'cursor-move'} ${showDepthOverlay && effectiveDepthOverlaySrc ? 'bg-transparent' : 'bg-[radial-gradient(#1a1a1a_1.2px,transparent_1.2px)] [background-size:24px_24px]'}`} />
+            <div ref={canvasRef} style={depthOverlayCanvasStyle} className={`relative z-[1] flex-1 w-full h-full ${selectionModeEnabled ? 'cursor-default' : brushSettings.enabled ? 'cursor-none' : 'cursor-move'} ${showDepthOverlay && effectiveDepthOverlaySrc ? 'bg-transparent' : 'bg-[radial-gradient(#1a1a1a_1.2px,transparent_1.2px)] [background-size:24px_24px]'}`} />
 
             {selectionRect && (
               <div
