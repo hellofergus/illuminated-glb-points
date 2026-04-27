@@ -38,8 +38,11 @@ type ControlSidebarProps = {
   depthAction: DepthAction;
   depthOverlayOpacityPercent: number;
   depthImg: string | null;
+  linkedDepthPsdName: string | null;
   handleAutoDepth: () => void;
   handleFileChange: (e: React.ChangeEvent<HTMLInputElement>, type: 'source' | 'depth') => void;
+  handleRefreshLinkedDepthPsd: () => void;
+  handleLinkDepthPsd: () => void;
   handleGenerate: () => void;
   handleGlbUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleRedo: () => void;
@@ -138,8 +141,11 @@ export function ControlSidebar({
   depthAction,
   depthOverlayOpacityPercent,
   depthImg,
+  linkedDepthPsdName,
   handleAutoDepth,
   handleFileChange,
+  handleRefreshLinkedDepthPsd,
+  handleLinkDepthPsd,
   handleGenerate,
   handleGlbUpload,
   handleRedo,
@@ -277,6 +283,23 @@ export function ControlSidebar({
               >
                 {isAutoDepthLoading ? 'RUNNING_GEN...' : '[ EXECUTE_AUTO_DEPTH ]'}
               </button>
+              <button
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleLinkDepthPsd(); }}
+                className="text-[9px] font-mono text-tech-accent hover:underline self-end tracking-tighter"
+              >
+                [ LINK_PSD_DEPTH ]
+              </button>
+              {linkedDepthPsdName && (
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRefreshLinkedDepthPsd(); }}
+                    className="text-[9px] font-mono text-tech-accent hover:underline tracking-tighter"
+                  >
+                    [ REFRESH_PSD_DEPTH ]
+                  </button>
+                  <div className="text-[8px] text-tech-accent/70 font-mono uppercase self-end">LIVE PSD: {linkedDepthPsdName}</div>
+                </div>
+              )}
               <div className="space-y-2 border-t border-tech-border/30 pt-2 mt-1">
                 <div className="flex items-center justify-between">
                   <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Depth Map Encoding</span>
