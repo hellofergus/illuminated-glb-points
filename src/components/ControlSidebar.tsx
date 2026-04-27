@@ -265,9 +265,9 @@ export function ControlSidebar({
             </div>
           </label>
 
-          <label className="block group cursor-pointer">
-            <input type="file" className="hidden" onChange={(e) => handleFileChange(e, 'depth')} />
-            <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1">
+            <label className="block group cursor-pointer">
+              <input type="file" className="hidden" onChange={(e) => handleFileChange(e, 'depth')} />
               <div className="w-full h-10 border border-dashed border-tech-subtle-border rounded flex items-center justify-between px-3 text-[11px] group-hover:border-tech-accent transition-colors bg-tech-bg/30">
                 <span className="opacity-60 uppercase font-mono">Depth Map</span>
                 {depthImg ? (
@@ -276,52 +276,58 @@ export function ControlSidebar({
                   <Upload className="w-3 h-3 opacity-40 group-hover:text-tech-accent" />
                 )}
               </div>
+            </label>
+            <button
+              type="button"
+              onClick={handleAutoDepth}
+              disabled={!sourceImg || isAutoDepthLoading}
+              className="text-[9px] font-mono text-tech-accent hover:underline disabled:opacity-30 self-end tracking-tighter"
+            >
+              {isAutoDepthLoading ? 'RUNNING_GEN...' : '[ EXECUTE_AUTO_DEPTH ]'}
+            </button>
+            <button
+              type="button"
+              onClick={handleLinkDepthPsd}
+              className="text-[9px] font-mono text-tech-accent hover:underline self-end tracking-tighter"
+            >
+              [ LINK_LIVE_DEPTH_FILE ]
+            </button>
+            <div className="flex flex-col items-end gap-1">
               <button
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleAutoDepth(); }}
-                disabled={!sourceImg || isAutoDepthLoading}
-                className="text-[9px] font-mono text-tech-accent hover:underline disabled:opacity-30 self-end tracking-tighter"
+                type="button"
+                onClick={handleRefreshLinkedDepthPsd}
+                disabled={!linkedDepthPsdName}
+                className="text-[9px] font-mono text-tech-accent hover:underline tracking-tighter disabled:opacity-30 disabled:no-underline"
               >
-                {isAutoDepthLoading ? 'RUNNING_GEN...' : '[ EXECUTE_AUTO_DEPTH ]'}
+                [ REFRESH_LINKED_DEPTH ]
               </button>
-              <button
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleLinkDepthPsd(); }}
-                className="text-[9px] font-mono text-tech-accent hover:underline self-end tracking-tighter"
-              >
-                [ LINK_PSD_DEPTH ]
-              </button>
-              {linkedDepthPsdName && (
-                <div className="flex flex-col items-end gap-1">
-                  <button
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRefreshLinkedDepthPsd(); }}
-                    className="text-[9px] font-mono text-tech-accent hover:underline tracking-tighter"
-                  >
-                    [ REFRESH_PSD_DEPTH ]
-                  </button>
-                  <div className="text-[8px] text-tech-accent/70 font-mono uppercase self-end">LIVE PSD: {linkedDepthPsdName}</div>
-                </div>
-              )}
-              <div className="space-y-2 border-t border-tech-border/30 pt-2 mt-1">
-                <div className="flex items-center justify-between">
-                  <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Depth Map Encoding</span>
-                  <span className="mono-value text-[9px] text-tech-accent">{params.depthColorSpace === 'srgb-linear' ? 'LINEARIZED' : 'RAW'}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setParams({ ...params, depthColorSpace: 'raw' }); }}
-                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${params.depthColorSpace === 'raw' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
-                  >
-                    Raw
-                  </button>
-                  <button
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setParams({ ...params, depthColorSpace: 'srgb-linear' }); }}
-                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${params.depthColorSpace === 'srgb-linear' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
-                  >
-                    sRGB to Linear
-                  </button>
-                </div>
+              <div className="text-[8px] text-tech-accent/70 font-mono uppercase self-end">
+                {linkedDepthPsdName ? `LIVE DEPTH: ${linkedDepthPsdName}` : 'LIVE DEPTH: NOT LINKED'}
               </div>
             </div>
-          </label>
+            <div className="space-y-2 border-t border-tech-border/30 pt-2 mt-1">
+              <div className="flex items-center justify-between">
+                <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Depth Map Encoding</span>
+                <span className="mono-value text-[9px] text-tech-accent">{params.depthColorSpace === 'srgb-linear' ? 'LINEARIZED' : 'RAW'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setParams({ ...params, depthColorSpace: 'raw' })}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${params.depthColorSpace === 'raw' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Raw
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setParams({ ...params, depthColorSpace: 'srgb-linear' })}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${params.depthColorSpace === 'srgb-linear' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  sRGB to Linear
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div className="pt-2 border-t border-tech-border/30">
             <label className="block group cursor-pointer">

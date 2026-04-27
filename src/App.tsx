@@ -102,6 +102,20 @@ type BrowserFileWindow = Window & typeof globalThis & {
   showOpenFilePicker?: (options?: any) => Promise<any[]>;
 };
 
+const PSD_FILE_EXTENSION = /\.psd$/i;
+
+const isPsdFile = (file: File, fileHandle?: any) => {
+  const handleName = typeof fileHandle?.name === 'string' ? fileHandle.name : '';
+  return PSD_FILE_EXTENSION.test(file.name) || PSD_FILE_EXTENSION.test(handleName);
+};
+
+const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result as string);
+  reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+  reader.readAsDataURL(file);
+});
+
 export default function App() {
   const clampBrushSize = (size: number) => Math.min(500, Math.max(1, size));
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
@@ -403,6 +417,7 @@ export default function App() {
   const sourceImgRef = useRef<HTMLImageElement>(null);
   const depthImgRef = useRef<HTMLImageElement>(null);
   const sessionFileInputRef = useRef<HTMLInputElement>(null);
+  const linkedDepthFileInputRef = useRef<HTMLInputElement>(null);
   const sceneRef = useRef<SceneRefs | null>(null);
   const linkedDepthPsdHandleRef = useRef<any>(null);
   const linkedDepthPsdLastModifiedRef = useRef<number | null>(null);
@@ -787,6 +802,47 @@ export default function App() {
     setLinkedDepthPsdName(null);
   };
 
+  const promptLinkedDepthFileSelection = () => {
+    if (!linkedDepthFileInputRef.current) {
+      setStatus('Notice: Linked depth file picker is unavailable');
+      return;
+    }
+
+    linkedDepthFileInputRef.current.value = '';
+    linkedDepthFileInputRef.current.click();
+  };
+
+  const applyLinkedDepthFile = async (file: File, fileHandle?: any, suppressStatus: boolean = false) => {
+    let nextDepthImg: string | null = null;
+
+    if (isPsdFile(file, fileHandle)) {
+      const psd = readPsd(await file.arrayBuffer()) as any;
+      const compositeCanvas = psd.canvas as HTMLCanvasElement | undefined;
+
+      if (!compositeCanvas) {
+        setStatus('Error: Linked PSD depth map is missing composite image data');
+        return false;
+      }
+
+      nextDepthImg = compositeCanvas.toDataURL('image/png');
+    } else {
+      nextDepthImg = await readFileAsDataUrl(file);
+    }
+
+    setDepthImg(nextDepthImg);
+    setPaintedDepthImg(null);
+    linkedDepthPsdHandleRef.current = fileHandle ?? null;
+    linkedDepthPsdLastModifiedRef.current = fileHandle ? file.lastModified : null;
+    setLinkedDepthPsdName(typeof fileHandle?.name === 'string' ? fileHandle.name : file.name);
+
+    if (!suppressStatus) {
+      const suffix = fileHandle ? '' : ' (manual refresh mode)';
+      setStatus(`Linked depth file loaded: ${typeof fileHandle?.name === 'string' ? fileHandle.name : file.name}${suffix}`);
+    }
+
+    return true;
+  };
+
   const renderLinkedDepthPsdFile = async (fileHandle: any, suppressStatus: boolean = false) => {
     if (!fileHandle || isRefreshingLinkedDepthPsdRef.current) {
       return false;
@@ -796,28 +852,10 @@ export default function App() {
 
     try {
       const file = await fileHandle.getFile();
-      const psd = readPsd(await file.arrayBuffer()) as any;
-      const compositeCanvas = psd.canvas as HTMLCanvasElement | undefined;
-
-      if (!compositeCanvas) {
-        setStatus('Error: PSD depth map is missing composite image data');
-        return false;
-      }
-
-      setDepthImg(compositeCanvas.toDataURL('image/png'));
-      setPaintedDepthImg(null);
-      linkedDepthPsdHandleRef.current = fileHandle;
-      linkedDepthPsdLastModifiedRef.current = file.lastModified;
-      setLinkedDepthPsdName(typeof fileHandle.name === 'string' ? fileHandle.name : file.name);
-
-      if (!suppressStatus) {
-        setStatus(`Linked PSD depth loaded: ${typeof fileHandle.name === 'string' ? fileHandle.name : file.name}`);
-      }
-
-      return true;
+      return await applyLinkedDepthFile(file, fileHandle, suppressStatus);
     } catch (error) {
       console.error(error);
-      setStatus('Error: Failed to read PSD depth map');
+      setStatus('Error: Failed to read linked depth file');
       return false;
     } finally {
       isRefreshingLinkedDepthPsdRef.current = false;
@@ -825,8 +863,10 @@ export default function App() {
   };
 
   const handleLinkDepthPsd = async () => {
-    if (!supportsFileSessionSave()) {
-      setStatus('Notice: Local PSD linking requires the browser file access API');
+    if (!supportsPersistentDepthLink()) {
+      clearLinkedDepthPsd();
+      setStatus('Notice: Persistent live linking is unavailable here; choose a depth file for manual refresh');
+      promptLinkedDepthFileSelection();
       return;
     }
 
@@ -836,6 +876,15 @@ export default function App() {
         excludeAcceptAllOption: false,
         multiple: false,
         types: [
+          {
+            description: 'Depth images',
+            accept: {
+              'image/png': ['.png'],
+              'image/jpeg': ['.jpg', '.jpeg'],
+              'image/webp': ['.webp'],
+              'image/bmp': ['.bmp']
+            }
+          },
           {
             description: 'Photoshop document',
             accept: {
@@ -858,20 +907,41 @@ export default function App() {
       }
 
       console.error(error);
-      setStatus('Error: PSD depth linking failed');
+      setStatus('Error: Linked depth selection failed');
+    }
+  };
+
+  const handleLinkedDepthFileInputChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+
+    try {
+      await applyLinkedDepthFile(file);
+    } catch (error) {
+      console.error(error);
+      setStatus('Error: Failed to load selected depth file');
     }
   };
 
   const handleRefreshLinkedDepthPsd = async () => {
     const fileHandle = linkedDepthPsdHandleRef.current;
+    if (!fileHandle && !linkedDepthPsdName) {
+      setStatus('Notice: No linked depth file to refresh');
+      return;
+    }
+
     if (!fileHandle) {
-      setStatus('Notice: No linked PSD depth map to refresh');
+      setStatus('Select the updated depth file to refresh');
+      promptLinkedDepthFileSelection();
       return;
     }
 
     const refreshed = await renderLinkedDepthPsdFile(fileHandle, true);
     if (refreshed) {
-      setStatus(`Linked PSD refreshed: ${typeof fileHandle.name === 'string' ? fileHandle.name : 'depth.psd'}`);
+      setStatus(`Linked depth file refreshed: ${typeof fileHandle.name === 'string' ? fileHandle.name : 'depth-map'}`);
     }
   };
 
@@ -1098,6 +1168,19 @@ export default function App() {
   const supportsFileSessionSave = () => {
     const browserWindow = window as BrowserFileWindow;
     return Boolean(browserWindow.showSaveFilePicker && browserWindow.showOpenFilePicker);
+  };
+
+  const supportsOpenFilePicker = () => {
+    const browserWindow = window as BrowserFileWindow;
+    return Boolean(browserWindow.showOpenFilePicker);
+  };
+
+  const supportsPersistentDepthLink = () => {
+    if (!supportsOpenFilePicker()) {
+      return false;
+    }
+
+    return !navigator.userAgent.includes('Code/');
   };
 
   const getSessionFilePickerOptions = () => ({
@@ -2127,7 +2210,7 @@ export default function App() {
         }
 
         await renderLinkedDepthPsdFile(fileHandle, true);
-        setStatus(`Linked PSD refreshed: ${typeof fileHandle.name === 'string' ? fileHandle.name : file.name}`);
+        setStatus(`Linked depth file refreshed: ${typeof fileHandle.name === 'string' ? fileHandle.name : file.name}`);
       } catch (error) {
         console.error(error);
       }
@@ -3030,6 +3113,12 @@ export default function App() {
           type="file"
           accept=".json,application/json,text/json"
           onChange={handleSessionFileInputChange}
+        />
+        <input
+          ref={linkedDepthFileInputRef}
+          type="file"
+          accept=".png,.jpg,.jpeg,.webp,.bmp,.psd,image/png,image/jpeg,image/webp,image/bmp,image/vnd.adobe.photoshop,application/octet-stream"
+          onChange={handleLinkedDepthFileInputChange}
         />
         <img ref={sourceImgRef} src={sourceImg || undefined} alt="hidden source" />
         <img ref={depthImgRef} src={(paintedDepthImg ?? depthImg) || undefined} alt="hidden depth" />
