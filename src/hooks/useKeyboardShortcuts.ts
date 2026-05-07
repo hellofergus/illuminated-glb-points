@@ -3,6 +3,7 @@ import type { BrushMode } from '../processing/pointInteraction';
 
 type UseKeyboardShortcutsArgs = {
   brushEnabled: boolean;
+  canToggleCloneSourcePicking: boolean;
   isEditableTarget: (target: EventTarget | null) => boolean;
   selectionModeEnabledRef: { current: boolean };
   hideSelectedPoints: () => void;
@@ -12,10 +13,12 @@ type UseKeyboardShortcutsArgs = {
   handleUndo: () => void;
   handleRedo: () => void;
   handleSaveSessionToFile: () => void | Promise<void>;
+  toggleCloneSourcePicking: () => void;
 };
 
 export const useKeyboardShortcuts = ({
   brushEnabled,
+  canToggleCloneSourcePicking,
   isEditableTarget,
   selectionModeEnabledRef,
   hideSelectedPoints,
@@ -24,7 +27,8 @@ export const useKeyboardShortcuts = ({
   setBrushSoftnessPercent,
   handleUndo,
   handleRedo,
-  handleSaveSessionToFile
+  handleSaveSessionToFile,
+  toggleCloneSourcePicking
 }: UseKeyboardShortcutsArgs) => {
   useEffect(() => {
     const handleShortcutKeyDown = (event: KeyboardEvent) => {
@@ -55,6 +59,12 @@ export const useKeyboardShortcuts = ({
       if (selectionModeEnabledRef.current && event.key === 'Backspace') {
         event.preventDefault();
         hideSelectedPoints();
+        return;
+      }
+
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'i' && canToggleCloneSourcePicking) {
+        event.preventDefault();
+        toggleCloneSourcePicking();
         return;
       }
 
@@ -98,12 +108,14 @@ export const useKeyboardShortcuts = ({
     adjustBrushSize,
     adjustBrushStrengthPercent,
     brushEnabled,
+    canToggleCloneSourcePicking,
     handleRedo,
     handleSaveSessionToFile,
     handleUndo,
     hideSelectedPoints,
     isEditableTarget,
     selectionModeEnabledRef,
-    setBrushSoftnessPercent
+    setBrushSoftnessPercent,
+    toggleCloneSourcePicking
   ]);
 };

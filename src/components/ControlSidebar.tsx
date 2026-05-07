@@ -1,6 +1,6 @@
 import React from 'react';
 import { Upload, Box, Eraser, Paintbrush, Undo, Redo, Layers, ChevronRight } from 'lucide-react';
-import { SamplingParams } from '../processing/pointSampler';
+import { SamplingParams, type ProjectionMeshPixelBounds } from '../processing/pointSampler';
 import { BrushMode } from '../processing/pointInteraction';
 import type { ActiveTool, AddAction, AddAppearanceSource, DepthAction, ToolInteractionMode, VisibilityBrushAction } from '../types/app';
 
@@ -86,6 +86,7 @@ type ControlSidebarProps = {
   setToolInteractionMode: React.Dispatch<React.SetStateAction<ToolInteractionMode>>;
   setVisibilityBrushAction: React.Dispatch<React.SetStateAction<VisibilityBrushAction>>;
   showPointIndices: boolean;
+  projectionMeshPixelBounds: ProjectionMeshPixelBounds | null;
   projectionMeshOpacityPercent: number;
   setProjectionMeshOpacityPercent: (value: number) => void;
   toolInteractionMode: ToolInteractionMode;
@@ -189,6 +190,7 @@ export function ControlSidebar({
   setToolInteractionMode,
   setVisibilityBrushAction,
   showPointIndices,
+  projectionMeshPixelBounds,
   projectionMeshOpacityPercent,
   setProjectionMeshOpacityPercent,
   toolInteractionMode,
@@ -459,6 +461,62 @@ export function ControlSidebar({
             >
               Add Points
             </button>
+          </div>
+
+          <div className="space-y-3 border-t border-tech-border/30 pt-3">
+            <div className="flex items-center justify-between py-1">
+              <span className="mono-value opacity-50 font-mono text-[9px]">Show Surface Mesh</span>
+              <button
+                onClick={() => setShowProjectionMesh(!showProjectionMesh)}
+                className={`w-8 h-4 border border-tech-subtle-border rounded-full transition-colors relative ${showProjectionMesh ? 'bg-tech-accent' : 'bg-tech-border'}`}
+              >
+                <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${showProjectionMesh ? 'right-1' : 'left-1'}`} />
+              </button>
+            </div>
+
+            <div>
+              <div className="flex justify-between mono-value mb-1 font-mono text-[9px]">
+                <span className="opacity-50">Surface Transparency</span>
+                <span>{projectionMeshOpacityPercent}%</span>
+              </div>
+              <input
+                type="range" min="0" max="100" step="1"
+                value={projectionMeshOpacityPercent}
+                onChange={(e) => setProjectionMeshOpacityPercent(parseInt(e.target.value))}
+                className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+
+            <div className="space-y-2 rounded border border-tech-border/40 bg-tech-bg/20 px-2 py-2">
+              <div className="flex items-center justify-between mono-value font-mono text-[9px] uppercase">
+                <span className="opacity-50">Surface Mesh Coords</span>
+                <span className="text-tech-accent">
+                  {projectionMeshPixelBounds ? `${projectionMeshPixelBounds.cols}x${projectionMeshPixelBounds.rows}` : 'N/A'}
+                </span>
+              </div>
+              {projectionMeshPixelBounds ? (
+                <>
+                  <div className="flex justify-between mono-value font-mono text-[9px]">
+                    <span className="opacity-50">X Range</span>
+                    <span>{projectionMeshPixelBounds.minX}px to {projectionMeshPixelBounds.maxX}px</span>
+                  </div>
+                  <div className="flex justify-between mono-value font-mono text-[9px]">
+                    <span className="opacity-50">Y Range</span>
+                    <span>{projectionMeshPixelBounds.minY}px to {projectionMeshPixelBounds.maxY}px</span>
+                  </div>
+                  <div className="flex justify-between mono-value font-mono text-[9px]">
+                    <span className="opacity-50">Z Range</span>
+                    <span>{projectionMeshPixelBounds.minZ.toFixed(2)} to {projectionMeshPixelBounds.maxZ.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between mono-value font-mono text-[9px]">
+                    <span className="opacity-50">Vertex Step</span>
+                    <span>{projectionMeshPixelBounds.step}px</span>
+                  </div>
+                </>
+              ) : (
+                <div className="mono-value font-mono text-[9px] opacity-40">Generate or load a depth surface to inspect mesh pixel coordinates.</div>
+              )}
+            </div>
           </div>
 
           {activeTool === 'visibility' && (
@@ -842,29 +900,6 @@ export function ControlSidebar({
                   type="range" min="0.1" max="5" step="0.05"
                   value={addPointSize}
                   onChange={(e) => setAddPointSize(parseFloat(e.target.value))}
-                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              <div className="flex items-center justify-between py-1">
-                <span className="mono-value opacity-50 font-mono text-[9px]">Show Surface Mesh</span>
-                <button
-                  onClick={() => setShowProjectionMesh(!showProjectionMesh)}
-                  className={`w-8 h-4 border border-tech-subtle-border rounded-full transition-colors relative ${showProjectionMesh ? 'bg-tech-accent' : 'bg-tech-border'}`}
-                >
-                  <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${showProjectionMesh ? 'right-1' : 'left-1'}`} />
-                </button>
-              </div>
-
-              <div>
-                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]">
-                  <span className="opacity-50">Surface Transparency</span>
-                  <span>{projectionMeshOpacityPercent}%</span>
-                </div>
-                <input
-                  type="range" min="0" max="100" step="1"
-                  value={projectionMeshOpacityPercent}
-                  onChange={(e) => setProjectionMeshOpacityPercent(parseInt(e.target.value))}
                   className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
                 />
               </div>

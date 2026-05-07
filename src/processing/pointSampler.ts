@@ -46,6 +46,85 @@ export type DepthPixelSource = {
   height: number;
 };
 
+export type ProjectionMeshPixelBounds = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+  cols: number;
+  rows: number;
+  step: number;
+};
+
+const PROJECTION_MESH_STEP = 4;
+
+export function getProjectionMeshPixelBounds(
+  depthSource: DepthPixelSource,
+  params: SamplingParams,
+  sourceWidth: number,
+  sourceHeight: number
+): ProjectionMeshPixelBounds | null {
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    return null;
+  }
+
+  const cols = Math.floor(sourceWidth / PROJECTION_MESH_STEP);
+  const rows = Math.floor(sourceHeight / PROJECTION_MESH_STEP);
+
+  if (cols <= 0 || rows <= 0) {
+    return null;
+  }
+
+  const srgbToLinear = (value: number) => {
+    if (value <= 0.04045) {
+      return value / 12.92;
+    }
+
+    return Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+
+  const normalizeDepthValue = (value: number) => {
+    const normalizedValue = Math.max(0, Math.min(1, value));
+    return params.depthColorSpace === 'srgb-linear'
+      ? srgbToLinear(normalizedValue)
+      : normalizedValue;
+  };
+
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const px = col * PROJECTION_MESH_STEP;
+      const py = row * PROJECTION_MESH_STEP;
+      const safeX = Math.min(px, depthSource.width - 1);
+      const safeY = Math.min(py, depthSource.height - 1);
+      const pixelIndex = (safeY * depthSource.width + safeX) * 4;
+
+      let depthValue = normalizeDepthValue(depthSource.data[pixelIndex] / 255);
+      if (params.invertDepth) depthValue = 1 - depthValue;
+
+      const meshZ = depthValue * params.depthScale;
+      minZ = Math.min(minZ, meshZ);
+      maxZ = Math.max(maxZ, meshZ);
+    }
+  }
+
+  return {
+    minX: 0,
+    maxX: (cols - 1) * PROJECTION_MESH_STEP,
+    minY: 0,
+    maxY: (rows - 1) * PROJECTION_MESH_STEP,
+    minZ: Number.isFinite(minZ) ? minZ : 0,
+    maxZ: Number.isFinite(maxZ) ? maxZ : 0,
+    cols,
+    rows,
+    step: PROJECTION_MESH_STEP
+  };
+}
+
 export async function processImages(
   sourceImage: HTMLImageElement,
   depthImage: HTMLImageElement | null,
@@ -845,7 +924,7 @@ export function buildProjectionMesh(
   sourceWidth: number,
   sourceHeight: number
 ): THREE.Mesh {
-  const meshStep = 4; // 1 vertex per 4 pixels — enough detail without being heavy
+  const meshStep = PROJECTION_MESH_STEP; // 1 vertex per 4 pixels — enough detail without being heavy
   const depthData = depthSource.data;
 
   const srgbToLinear = (value: number) => {

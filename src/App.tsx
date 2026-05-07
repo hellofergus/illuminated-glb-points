@@ -26,7 +26,17 @@ import {
   Redo
 } from 'lucide-react';
 import { initializeCanvas, readPsd } from 'ag-psd';
-import { processImages, exportToGLB, getAutoDepthMap, buildProjectionMesh, SamplingParams, PointData, type DepthPixelSource } from './processing/pointSampler';
+import {
+  processImages,
+  exportToGLB,
+  getAutoDepthMap,
+  buildProjectionMesh,
+  getProjectionMeshPixelBounds,
+  SamplingParams,
+  PointData,
+  type DepthPixelSource,
+  type ProjectionMeshPixelBounds
+} from './processing/pointSampler';
 import { BrushMode, findNearestHit, getBrushInfluence, getIndicesInRectangle, mergeSelectionIndices, shouldApplyBrushEffect, type ScreenPointHit } from './processing/pointInteraction';
 import { ControlSidebar } from './components/ControlSidebar';
 import { createPointCloudManager, disposePointIndexLabels } from './three/pointCloud';
@@ -204,6 +214,7 @@ export default function App() {
   // Projection surface
   const [showProjectionMesh, setShowProjectionMesh] = useState(false);
   const [projectionMeshOpacityPercent, setProjectionMeshOpacityPercent] = useState<number>(20);
+  const [projectionMeshPixelBounds, setProjectionMeshPixelBounds] = useState<ProjectionMeshPixelBounds | null>(null);
 
   // Tool model
   const [activeTool, setActiveTool] = useState<ActiveTool>('visibility');
@@ -482,6 +493,7 @@ export default function App() {
   });
 
   const clearProjectionMesh = () => {
+    setProjectionMeshPixelBounds(null);
     if (!sceneRef.current?.mesh) return;
 
     sceneRef.current.scene.remove(sceneRef.current.mesh);
@@ -508,6 +520,7 @@ export default function App() {
       sourceWidth,
       sourceHeight
     );
+    setProjectionMeshPixelBounds(getProjectionMeshPixelBounds(depthPixels, currentParams, sourceWidth, sourceHeight));
 
     projMesh.visible = true;
     (projMesh.material as THREE.MeshBasicMaterial).opacity = visible ? opacityPercent / 100 : 0;
@@ -1228,15 +1241,26 @@ export default function App() {
     setIsSessionDirty(false);
   };
 
-  const downloadSessionFile = (session: PersistedSession, fileName?: string) => {
-    const targetFileName = fileName ?? sessionFileName ?? 'illuminated-session.json';
-    const blob = new Blob([`${JSON.stringify(session, null, 2)}\n`], { type: 'application/json' });
+  const triggerDownload = (blob: Blob, fileName: string) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = targetFileName;
+    link.download = fileName;
+    link.style.display = 'none';
+
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(link);
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+  const downloadSessionFile = (session: PersistedSession, fileName?: string) => {
+    const targetFileName = fileName ?? sessionFileName ?? 'illuminated-session.json';
+    const blob = new Blob([`${JSON.stringify(session, null, 2)}\n`], { type: 'application/json' });
+    triggerDownload(blob, targetFileName);
 
     setSessionFileName(targetFileName);
     lastSavedSessionFingerprintRef.current = getSessionFingerprint(session);
@@ -2540,8 +2564,19 @@ export default function App() {
     syncSelectedPointVisibility(selectedPointIndices);
   }, [selectedPointIndices, points]);
 
+  const toggleCloneSourcePicking = () => {
+    const nextIsPickingCloneSource = !isPickingCloneSource;
+    setIsPickingCloneSource(nextIsPickingCloneSource);
+    setStatus(
+      nextIsPickingCloneSource
+        ? 'Notice: Click a visible point to set the clone source'
+        : 'Notice: Pick exactly one source point to clone its size and color'
+    );
+  };
+
   useKeyboardShortcuts({
     brushEnabled: brushSettings.enabled,
+    canToggleCloneSourcePicking: activeTool === 'add' && addAction === 'single' && addAppearanceSource === 'clone-selected',
     isEditableTarget,
     selectionModeEnabledRef,
     hideSelectedPoints,
@@ -2550,7 +2585,8 @@ export default function App() {
     setBrushSoftnessPercent,
     handleUndo,
     handleRedo,
-    handleSaveSessionToFile
+    handleSaveSessionToFile,
+    toggleCloneSourcePicking
   });
 
   const addNewPoints = (newPoints: PointData[]) => {
@@ -2774,11 +2810,7 @@ export default function App() {
       }
 
       const blob = await exportToGLB(exportedPoints);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'pointcloud.glb';
-      a.click();
+      triggerDownload(blob, 'pointcloud.glb');
       setStatus('Export complete');
     } catch (err) {
       console.error(err);
@@ -2799,11 +2831,7 @@ export default function App() {
     }
 
     const blob = new Blob([JSON.stringify(exportedPoints)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'pointcloud.json';
-    a.click();
+    triggerDownload(blob, 'pointcloud.json');
     setStatus('Export complete');
   };
 
@@ -2965,6 +2993,7 @@ export default function App() {
           setToolInteractionMode={setToolInteractionMode}
           setVisibilityBrushAction={setVisibilityBrushAction}
           showPointIndices={showPointIndices}
+          projectionMeshPixelBounds={projectionMeshPixelBounds}
           projectionMeshOpacityPercent={projectionMeshOpacityPercent}
           setProjectionMeshOpacityPercent={setProjectionMeshOpacityPercent}
           toolInteractionMode={toolInteractionMode}
@@ -2990,6 +3019,9 @@ export default function App() {
               <div className="flex gap-4">
                 <span className="mono-value text-[9px] opacity-60">RESOLUTION: {stats.width}x{stats.height}</span>
                 <span className="mono-value text-[9px] text-tech-accent font-bold">NODES: {stats.pointCount.toLocaleString()}</span>
+              </div>
+              <div className="mono-value text-[9px] opacity-60 text-right">
+                MESH: {projectionMeshPixelBounds ? `X ${projectionMeshPixelBounds.minX}-${projectionMeshPixelBounds.maxX}px, Y ${projectionMeshPixelBounds.minY}-${projectionMeshPixelBounds.maxY}px, Z ${projectionMeshPixelBounds.minZ.toFixed(2)}-${projectionMeshPixelBounds.maxZ.toFixed(2)}` : 'N/A'}
               </div>
               <div className="mono-value text-[9px] opacity-60">SELECTED: {selectedPointCount.toLocaleString()}</div>
             </div>
