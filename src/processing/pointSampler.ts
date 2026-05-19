@@ -25,6 +25,8 @@ export interface SamplingParams {
   samplingMode: 'grid' | 'blob' | 'stochastic' | 'pixel-exact' | 'dot-detect';
   depthColorSpace: 'raw' | 'srgb-linear';
   brightnessThreshold: number;
+  detailBoost: number;
+  fineDetailRescue: number;
   samplingStep: number;
   stochasticDensity: number;
   pointSizeMultiplier: number;
@@ -44,6 +46,12 @@ export type DepthPixelSource = {
   data: Uint8ClampedArray;
   width: number;
   height: number;
+};
+
+type GLBExportOptions = {
+  imageWidth: number;
+  imageHeight: number;
+  xyScale: number;
 };
 
 export async function processImages(
@@ -164,9 +172,12 @@ export async function processImages(
     v: height > 1 ? 1 - (sourceY / (height - 1)) : 0
   });
 
+  const detailBoost = Math.max(0, Math.min(1, params.detailBoost ?? 0));
+  const strictThreshold = Math.max(0.005, params.brightnessThreshold);
+
   const isRecoverablePeak = (x: number, y: number) => {
     const centerLuminance = getWeightedLuminanceAt(x, y);
-    const softThreshold = params.brightnessThreshold * 0.55;
+    const softThreshold = Math.max(0.005, params.brightnessThreshold * 0.55);
     if (centerLuminance < softThreshold) return false;
 
     let maxNeighborLuminance = 0;
@@ -190,11 +201,279 @@ export async function processImages(
   };
 
   const isStrictLitAt = (x: number, y: number) => {
-    return getWeightedLuminanceAt(x, y) >= params.brightnessThreshold;
+    return getWeightedLuminanceAt(x, y) >= strictThreshold;
   };
 
   const isLitAt = (x: number, y: number) => {
     return isStrictLitAt(x, y) || isRecoverablePeak(x, y);
+  };
+
+  const appendDetailBoostPoints = () => {
+    if (detailBoost <= 0) {
+      return;
+    }
+
+    const extraThreshold = Math.max(0.01, strictThreshold - (detailBoost * 0.16));
+    const existingSourcePoints = points
+      .filter((point) => typeof point.u === 'number' && typeof point.v === 'number')
+      .map((point) => ({
+        x: (point.u ?? 0) * (width - 1),
+        y: (1 - (point.v ?? 0)) * (height - 1)
+      }));
+
+    const hasNearbyExistingPoint = (sourceX: number, sourceY: number, radius: number) => {
+      const radiusSquared = radius * radius;
+
+      return existingSourcePoints.some((existingPoint) => {
+        const dx = existingPoint.x - sourceX;
+        const dy = existingPoint.y - sourceY;
+        return ((dx * dx) + (dy * dy)) <= radiusSquared;
+      });
+    };
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const luminance = getWeightedLuminanceAt(x, y);
+        if (luminance < extraThreshold && !isRecoverablePeak(x, y)) {
+          continue;
+        }
+
+        let isPeak = true;
+        let localContrast = 0;
+
+        for (let offsetY = -1; offsetY <= 1 && isPeak; offsetY++) {
+          for (let offsetX = -1; offsetX <= 1; offsetX++) {
+            if (offsetX === 0 && offsetY === 0) continue;
+
+            const neighborLuminance = getWeightedLuminanceAt(x + offsetX, y + offsetY);
+            if (neighborLuminance > luminance) {
+              isPeak = false;
+              break;
+            }
+
+            localContrast = Math.max(localContrast, luminance - neighborLuminance);
+          }
+        }
+
+        if (!isPeak || localContrast < 0.015) {
+          continue;
+        }
+
+        const dedupeRadius = Math.max(1, 2.5 - detailBoost);
+        if (hasNearbyExistingPoint(x, y, dedupeRadius)) {
+          continue;
+        }
+
+        const sampled = sampleSource(x, y);
+        let depthVal = getDepthAt(x, y);
+        if (params.invertDepth) depthVal = 1.0 - depthVal;
+        const { u, v } = getNormalizedUv(x, y);
+
+        points.push({
+          x: (x - width / 2) * params.xyScale,
+          y: -(y - height / 2) * params.xyScale,
+          z: depthVal * params.depthScale,
+          u,
+          v,
+          depthSample: getDepthAt(x, y),
+          zOffset: 0,
+          r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
+          g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
+          b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
+          size: Math.max(0.7, 1.05 - (detailBoost * 0.15)),
+          visibility: 1.0
+        });
+
+        existingSourcePoints.push({ x, y });
+      }
+    }
+  };
+
+  const appendFineDetailRescuePoints = () => {
+    const rescueStrength = Math.max(0, Math.min(1, params.fineDetailRescue ?? 0));
+    if (rescueStrength <= 0) {
+      return;
+    }
+
+    const visited = new Uint8Array(width * height);
+    const rescueThreshold = Math.max(0.01, strictThreshold - (rescueStrength * 0.18));
+    const maxComponentPixels = Math.round(18 + (rescueStrength * 220));
+    const maxComponentSpan = Math.round(10 + (rescueStrength * 26));
+    const existingSourcePoints = points
+      .filter((point) => typeof point.u === 'number' && typeof point.v === 'number')
+      .map((point) => ({
+        x: (point.u ?? 0) * (width - 1),
+        y: (1 - (point.v ?? 0)) * (height - 1)
+      }));
+
+    const isRescueLitAt = (x: number, y: number) => {
+      const luminance = getWeightedLuminanceAt(x, y);
+      return luminance >= rescueThreshold || isRecoverablePeak(x, y);
+    };
+
+    const hasNearbyExistingPoint = (sourceX: number, sourceY: number, radius: number) => {
+      const radiusSquared = radius * radius;
+
+      return existingSourcePoints.some((existingPoint) => {
+        const dx = existingPoint.x - sourceX;
+        const dy = existingPoint.y - sourceY;
+        return ((dx * dx) + (dy * dy)) <= radiusSquared;
+      });
+    };
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const seedIndex = y * width + x;
+        if (visited[seedIndex]) continue;
+
+        visited[seedIndex] = 1;
+        if (!isRescueLitAt(x, y)) continue;
+
+        const queue: Array<{ x: number; y: number }> = [{ x, y }];
+        let head = 0;
+        let weightedX = 0;
+        let weightedY = 0;
+        let weightedDepth = 0;
+        let weightedR = 0;
+        let weightedG = 0;
+        let weightedB = 0;
+        let totalWeight = 0;
+        let pixelCount = 0;
+        const componentPixels: Array<{ x: number; y: number; weight: number }> = [];
+        let minX = x;
+        let maxX = x;
+        let minY = y;
+        let maxY = y;
+
+        while (head < queue.length) {
+          const current = queue[head++];
+          const currentLuminance = getWeightedLuminanceAt(current.x, current.y);
+          if (currentLuminance < rescueThreshold && !isRecoverablePeak(current.x, current.y)) {
+            continue;
+          }
+
+          const sampled = sampleSource(current.x, current.y);
+          let depthVal = getDepthAt(current.x, current.y);
+          if (params.invertDepth) depthVal = 1.0 - depthVal;
+
+          const weight = Math.max(currentLuminance, 0.001);
+          weightedX += current.x * weight;
+          weightedY += current.y * weight;
+          weightedDepth += depthVal * weight;
+          weightedR += sampled.r * weight;
+          weightedG += sampled.g * weight;
+          weightedB += sampled.b * weight;
+          totalWeight += weight;
+          pixelCount += 1;
+          componentPixels.push({ x: current.x, y: current.y, weight });
+          minX = Math.min(minX, current.x);
+          maxX = Math.max(maxX, current.x);
+          minY = Math.min(minY, current.y);
+          maxY = Math.max(maxY, current.y);
+
+          for (let offsetY = -1; offsetY <= 1; offsetY++) {
+            for (let offsetX = -1; offsetX <= 1; offsetX++) {
+              if (offsetX === 0 && offsetY === 0) continue;
+
+              const nextX = current.x + offsetX;
+              const nextY = current.y + offsetY;
+              if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+
+              const nextIndex = nextY * width + nextX;
+              if (visited[nextIndex]) continue;
+
+              visited[nextIndex] = 1;
+              if (isRescueLitAt(nextX, nextY)) {
+                queue.push({ x: nextX, y: nextY });
+              }
+            }
+          }
+        }
+
+        if (pixelCount < 2 || pixelCount > maxComponentPixels || totalWeight <= 0) {
+          continue;
+        }
+
+        const bboxWidth = maxX - minX + 1;
+        const bboxHeight = maxY - minY + 1;
+        const bboxMaxSpan = Math.max(bboxWidth, bboxHeight);
+        if (bboxMaxSpan > maxComponentSpan) {
+          continue;
+        }
+
+        const targetX = weightedX / totalWeight;
+        const targetY = weightedY / totalWeight;
+        const componentDedupeRadius = Math.max(1.25, Math.min(6, Math.sqrt(pixelCount) * 0.45));
+        if (hasNearbyExistingPoint(targetX, targetY, componentDedupeRadius)) {
+          continue;
+        }
+
+        const detailStride = rescueStrength >= 0.8 ? 1 : rescueStrength >= 0.4 ? 2 : 3;
+        const candidatePixels = [...componentPixels].sort((left, right) => right.weight - left.weight);
+        const maxRescuePoints = Math.max(1, Math.min(candidatePixels.length, Math.round(pixelCount * (0.35 + rescueStrength * 0.65))));
+        const rescueSize = Math.max(0.65, Math.min(1.35, 0.65 + (rescueStrength * 0.45)));
+        let emittedPointCount = 0;
+
+        for (const componentPixel of candidatePixels) {
+          if (emittedPointCount >= maxRescuePoints) {
+            break;
+          }
+
+          const shouldKeepByStride = ((componentPixel.x + componentPixel.y) % detailStride) === 0;
+          const shouldKeepAsPeak = componentPixel.weight >= (rescueThreshold + 0.08) || isRecoverablePeak(componentPixel.x, componentPixel.y);
+          if (!shouldKeepByStride && !shouldKeepAsPeak) {
+            continue;
+          }
+
+          if (hasNearbyExistingPoint(componentPixel.x, componentPixel.y, Math.max(0.85, detailStride * 0.75))) {
+            continue;
+          }
+
+          const sampled = sampleSource(componentPixel.x, componentPixel.y);
+          let depthVal = getDepthAt(componentPixel.x, componentPixel.y);
+          if (params.invertDepth) depthVal = 1.0 - depthVal;
+          const { u, v } = getNormalizedUv(componentPixel.x, componentPixel.y);
+
+          points.push({
+            x: (componentPixel.x - width / 2) * params.xyScale,
+            y: -(componentPixel.y - height / 2) * params.xyScale,
+            z: depthVal * params.depthScale,
+            u,
+            v,
+            depthSample: getDepthAt(componentPixel.x, componentPixel.y),
+            zOffset: 0,
+            r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.r : 255)) / 255,
+            g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.g : 128)) / 255,
+            b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? sampled.b : 50)) / 255,
+            size: rescueSize,
+            visibility: 1.0
+          });
+
+          existingSourcePoints.push({ x: componentPixel.x, y: componentPixel.y });
+          emittedPointCount += 1;
+        }
+
+        if (emittedPointCount === 0) {
+          const { u, v } = getNormalizedUv(targetX, targetY);
+          points.push({
+            x: (targetX - width / 2) * params.xyScale,
+            y: -(targetY - height / 2) * params.xyScale,
+            z: (weightedDepth / totalWeight) * params.depthScale,
+            u,
+            v,
+            depthSample: getDepthAt(targetX, targetY),
+            zOffset: 0,
+            r: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? (weightedR / totalWeight) : 255)) / 255,
+            g: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? (weightedG / totalWeight) : 128)) / 255,
+            b: (params.whiteOnlyPoints ? 255 : (params.useSourceColors ? (weightedB / totalWeight) : 50)) / 255,
+            size: rescueSize,
+            visibility: 1.0
+          });
+
+          existingSourcePoints.push({ x: targetX, y: targetY });
+        }
+      }
+    }
   };
 
   if (params.samplingMode === 'dot-detect') {
@@ -535,10 +814,9 @@ export async function processImages(
     
     for (let y = 0; y < height; y += step) {
       for (let x = 0; x < width; x += step) {
-        const idx = (y * width + x) * 4;
-        const luminosity = getLuminosity(idx);
+        const luminosity = getWeightedLuminanceAt(x, y);
         
-        if (luminosity > params.brightnessThreshold) {
+        if (luminosity > strictThreshold) {
           // If luminosity is 0.8, it has an 80% * density chance to spawn
           const prob = luminosity * baseDensity;
           if (Math.random() < prob) {
@@ -576,7 +854,7 @@ export async function processImages(
       for (let x = 0; x < width; x += step) {
         const idx = y * width + x;
         if (visited[idx]) continue;
-        if (!isStrictLitAt(x, y)) {
+        if (!isLitAt(x, y)) {
           visited[idx] = 1;
           continue;
         }
@@ -597,7 +875,7 @@ export async function processImages(
           for (const {nx, ny} of neighbors) {
             if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
               const nidx = ny * width + nx;
-              if (!visited[nidx] && isStrictLitAt(nx, ny)) {
+              if (!visited[nidx] && isLitAt(nx, ny)) {
                 visited[nidx] = 1;
                 queue.push({x: nx, y: ny});
               }
@@ -659,9 +937,8 @@ export async function processImages(
 
     for (let y = 0; y < height; y += step) {
       for (let x = 0; x < width; x += step) {
-        const idx = (y * width + x) * 4;
-        const luminosity = (0.299 * sourceData[idx] + 0.587 * sourceData[idx+1] + 0.114 * sourceData[idx+2]) / 255;
-        let shouldSample = luminosity >= params.brightnessThreshold || (edgeMask && edgeMask[y * width + x] > 128);
+        const luminosity = getWeightedLuminanceAt(x, y);
+        let shouldSample = luminosity >= strictThreshold || isRecoverablePeak(x, y) || (edgeMask && edgeMask[y * width + x] > 128);
 
         if (shouldSample) {
           for (let d = 0; d < density; d++) {
@@ -724,6 +1001,9 @@ export async function processImages(
     }
   }
 
+  appendDetailBoostPoints();
+  appendFineDetailRescuePoints();
+
   return points;
 }
 
@@ -756,7 +1036,7 @@ function computeEdgeMask(data: Uint8ClampedArray, width: number, height: number)
   return mask;
 }
 
-export async function exportToGLB(points: PointData[]): Promise<Blob> {
+export async function exportToGLB(points: PointData[], options: GLBExportOptions): Promise<Blob> {
   // @ts-ignore
   const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter');
   
@@ -798,12 +1078,48 @@ export async function exportToGLB(points: PointData[]): Promise<Blob> {
 
   const material = new THREE.PointsMaterial({ size: 0.1, vertexColors: true, sizeAttenuation: true });
   const pointsMesh = new THREE.Points(geometry, material);
+  pointsMesh.name = 'PointCloud';
+
+  const halfWidth = (options.imageWidth * options.xyScale) / 2;
+  const halfHeight = (options.imageHeight * options.xyScale) / 2;
+  const quadGeometry = new THREE.BufferGeometry();
+  const quadPositions = new Float32Array([
+    -halfWidth, halfHeight, 0,
+    halfWidth, halfHeight, 0,
+    -halfWidth, -halfHeight, 0,
+    halfWidth, -halfHeight, 0,
+  ]);
+  const quadUvs = new Float32Array([
+    0, 1,
+    1, 1,
+    0, 0,
+    1, 0,
+  ]);
+
+  quadGeometry.setAttribute('position', new THREE.BufferAttribute(quadPositions, 3));
+  quadGeometry.setAttribute('uv', new THREE.BufferAttribute(quadUvs, 2));
+  quadGeometry.setIndex([0, 2, 1, 2, 3, 1]);
+  quadGeometry.computeVertexNormals();
+
+  const quadMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.18,
+  });
+  const imageQuad = new THREE.Mesh(quadGeometry, quadMaterial);
+  imageQuad.name = 'ImageQuad';
+
+  const exportRoot = new THREE.Group();
+  exportRoot.name = 'PointCloudExport';
+  exportRoot.add(imageQuad);
+  exportRoot.add(pointsMesh);
   
   const exporter = new GLTFExporter();
   
   return new Promise((resolve, reject) => {
     exporter.parse(
-      pointsMesh,
+      exportRoot,
       (gltf: ArrayBuffer | object) => {
         if (gltf instanceof ArrayBuffer) {
           resolve(new Blob([gltf], { type: 'model/gltf-binary' }));

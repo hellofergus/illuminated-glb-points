@@ -24,13 +24,15 @@ export type HistorySnapshot = {
   paintedDepthImg?: string | null;
 };
 
-export type ActiveTool = 'visibility' | 'depth' | 'add';
+export type ActiveTool = 'visibility' | 'depth' | 'scale' | 'add';
 
 export type ToolInteractionMode = 'arrow' | 'brush';
 
 export type VisibilityBrushAction = 'hide' | 'reveal' | 'select';
 
-export type DepthAction = 'push' | 'pull';
+export type DepthAction = 'push' | 'pull' | 'soften';
+
+export type ScaleAction = 'grow' | 'shrink';
 
 export type AddAction = 'single' | 'brush';
 

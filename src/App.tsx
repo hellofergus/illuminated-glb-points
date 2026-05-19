@@ -39,6 +39,7 @@ import type {
   AddAppearanceSource,
   DepthAction,
   HistorySnapshot,
+  ScaleAction,
   SavedSelection,
   SceneRefs,
   SelectionDragState,
@@ -74,12 +75,19 @@ type PersistedSession = {
   params: SamplingParams;
   maxPointSize: number;
   addPointSize: number;
+  addStrokeGap: number;
+  addStrokeAssist: number;
+  addAlignToEdge: boolean;
   showProjectionMesh: boolean;
   projectionMeshOpacityPercent: number;
   activeTool: ActiveTool;
   toolInteractionMode: ToolInteractionMode;
   visibilityBrushAction: VisibilityBrushAction;
   depthAction: DepthAction;
+  scaleAction: ScaleAction;
+  scaleBrushAmount: number;
+  scalePointSizeMin: number;
+  scalePointSizeMax: number;
   addAction: AddAction;
   addAppearanceSource: AddAppearanceSource;
   isPickingCloneSource: boolean;
@@ -121,6 +129,10 @@ export default function App() {
   const clampBrushStrengthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampBrushDepthPercent = (percent: number) => Math.min(100, Math.max(1, percent));
   const clampSoftnessPercent = (percent: number) => Math.min(100, Math.max(0, percent));
+  const clampScaleBrushPercent = (percent: number) => Math.min(100, Math.max(1, percent));
+  const clampScalePointSize = (size: number) => Math.min(25, Math.max(0.05, size));
+  const clampAddStrokeGap = (value: number) => Math.min(160, Math.max(2, value));
+  const clampAddStrokeAssistPercent = (percent: number) => Math.min(95, Math.max(0, percent));
   const defaultColorTransformPalettes = {
     red: '#7A1F1F, #B73737, #E88787',
     blue: '#183A74, #2F61B8, #8FB0F1',
@@ -200,6 +212,15 @@ export default function App() {
   const [addPointSize, setAddPointSize] = useState<number>(1.0);
   const addPointSizeRef = useRef(addPointSize);
   useEffect(() => { addPointSizeRef.current = addPointSize; }, [addPointSize]);
+  const [addStrokeGap, setAddStrokeGapState] = useState<number>(18);
+  const addStrokeGapRef = useRef(addStrokeGap);
+  useEffect(() => { addStrokeGapRef.current = addStrokeGap; }, [addStrokeGap]);
+  const [addStrokeAssist, setAddStrokeAssistState] = useState<number>(0.45);
+  const addStrokeAssistRef = useRef(addStrokeAssist);
+  useEffect(() => { addStrokeAssistRef.current = addStrokeAssist; }, [addStrokeAssist]);
+  const [addAlignToEdge, setAddAlignToEdge] = useState(false);
+  const addAlignToEdgeRef = useRef(addAlignToEdge);
+  useEffect(() => { addAlignToEdgeRef.current = addAlignToEdge; }, [addAlignToEdge]);
 
   // Projection surface
   const [showProjectionMesh, setShowProjectionMesh] = useState(false);
@@ -210,6 +231,10 @@ export default function App() {
   const [toolInteractionMode, setToolInteractionMode] = useState<ToolInteractionMode>('brush');
   const [visibilityBrushAction, setVisibilityBrushAction] = useState<VisibilityBrushAction>('hide');
   const [depthAction, setDepthAction] = useState<DepthAction>('push');
+  const [scaleAction, setScaleAction] = useState<ScaleAction>('grow');
+  const [scaleBrushAmount, setScaleBrushAmount] = useState<number>(0.25);
+  const [scalePointSizeMin, setScalePointSizeMinState] = useState<number>(0.1);
+  const [scalePointSizeMax, setScalePointSizeMaxState] = useState<number>(8);
   const [addAction, setAddAction] = useState<AddAction>('single');
   const [addAppearanceSource, setAddAppearanceSource] = useState<AddAppearanceSource>('image');
   const [isPickingCloneSource, setIsPickingCloneSource] = useState(false);
@@ -235,6 +260,10 @@ export default function App() {
   const brushSettingsRef = useRef(brushSettings);
   const isBrushingRef = useRef(isBrushing);
   const isAltNavigationRef = useRef(isAltNavigationActive);
+  const scaleActionRef = useRef(scaleAction);
+  const scaleBrushAmountRef = useRef(scaleBrushAmount);
+  const scalePointSizeMinRef = useRef(scalePointSizeMin);
+  const scalePointSizeMaxRef = useRef(scalePointSizeMax);
 
   // Stable refs for data accessed inside Three.js event-handler closures
   const pointsRef = useRef<PointData[]>(points);
@@ -252,6 +281,9 @@ export default function App() {
   useEffect(() => { isPickingPointColorRef.current = isPickingPointColor; }, [isPickingPointColor]);
 
   const raycasterRef = useRef(new THREE.Raycaster());
+  const addStrokeSmoothedPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const addStrokeLastEmitPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const addStrokeLastEmitWorldRef = useRef<{ x: number; y: number; z?: number } | null>(null);
 
   // Callback ref so Three.js closure can call the latest addNewPoints
   const addNewPointsCallbackRef = useRef<((pts: PointData[]) => void) | null>(null);
@@ -266,6 +298,10 @@ export default function App() {
   useEffect(() => { brushSettingsRef.current = brushSettings; }, [brushSettings]);
   useEffect(() => { isBrushingRef.current = isBrushing; }, [isBrushing]);
   useEffect(() => { isAltNavigationRef.current = isAltNavigationActive; }, [isAltNavigationActive]);
+  useEffect(() => { scaleActionRef.current = scaleAction; }, [scaleAction]);
+  useEffect(() => { scaleBrushAmountRef.current = scaleBrushAmount; }, [scaleBrushAmount]);
+  useEffect(() => { scalePointSizeMinRef.current = scalePointSizeMin; }, [scalePointSizeMin]);
+  useEffect(() => { scalePointSizeMaxRef.current = scalePointSizeMax; }, [scalePointSizeMax]);
   useEffect(() => { selectionModeEnabledRef.current = selectionModeEnabled; }, [selectionModeEnabled]);
   useEffect(() => { selectedPointIndicesRef.current = selectedPointIndices; }, [selectedPointIndices]);
   useEffect(() => { selectionDragStateRef.current = selectionDragState; }, [selectionDragState]);
@@ -303,6 +339,31 @@ export default function App() {
       ...prev,
       depthAmount: clampedPercent / 100
     }));
+  };
+
+  const setAddStrokeGap = (value: number) => {
+    setAddStrokeGapState(clampAddStrokeGap(value));
+  };
+
+  const setAddStrokeAssistPercent = (percent: number) => {
+    setAddStrokeAssistState(clampAddStrokeAssistPercent(percent) / 100);
+  };
+
+  const setScaleBrushAmountPercent = (percent: number) => {
+    const clampedPercent = clampScaleBrushPercent(percent);
+    setScaleBrushAmount(clampedPercent / 100);
+  };
+
+  const setScalePointSizeMin = (size: number) => {
+    const clampedSize = clampScalePointSize(size);
+    setScalePointSizeMinState(clampedSize);
+    setScalePointSizeMaxState((prev) => Math.max(clampScalePointSize(prev), clampedSize));
+  };
+
+  const setScalePointSizeMax = (size: number) => {
+    const clampedSize = clampScalePointSize(size);
+    setScalePointSizeMaxState(clampedSize);
+    setScalePointSizeMinState((prev) => Math.min(clampScalePointSize(prev), clampedSize));
   };
 
   const isEditableTarget = (target: EventTarget | null) => {
@@ -382,19 +443,31 @@ export default function App() {
       return;
     }
 
+    if (activeTool === 'scale') {
+      setSelectionModeEnabled(false);
+      setBrushSettings((prev) => ({
+        ...prev,
+        enabled: true,
+        mode: scaleAction === 'grow' ? 'grow' : 'shrink'
+      }));
+      return;
+    }
+
     setSelectionModeEnabled(false);
     setBrushSettings((prev) => ({
       ...prev,
       enabled: true,
       mode: addAction === 'single' ? 'stamp' : 'paint'
     }));
-  }, [activeTool, addAction, depthAction, toolInteractionMode, visibilityBrushAction]);
+  }, [activeTool, addAction, depthAction, scaleAction, toolInteractionMode, visibilityBrushAction]);
 
   // Parameters
   const [params, setParams] = useState<SamplingParams>({
     samplingMode: 'stochastic',
     depthColorSpace: 'raw',
     brightnessThreshold: 0.1,
+    detailBoost: 0,
+    fineDetailRescue: 0,
     samplingStep: 2,
     stochasticDensity: 0.8,
     pointSizeMultiplier: 1.0,
@@ -425,6 +498,7 @@ export default function App() {
   const brushStrengthPercent = Math.round(brushSettings.strength * 100);
   const brushDepthPercent = Math.round(brushSettings.depthAmount * 100);
   const brushSoftnessPercent = Math.round(brushSettings.softness * 100);
+  const scaleBrushAmountPercent = Math.round(scaleBrushAmount * 100);
   const sortedSelectedPointIndices = [...selectedPointIndices].sort((left, right) => left - right);
   const selectedPointCount = sortedSelectedPointIndices.length;
   const addedPointCount = points.reduce((count: number, point: PointData) => count + (point.isAdded ? 1 : 0), 0);
@@ -612,11 +686,13 @@ export default function App() {
 
     const imageData = paintedCtx.getImageData(0, 0, paintedCanvas.width, paintedCanvas.height);
     const data = imageData.data;
+  const sourceData = new Uint8ClampedArray(data);
     const centerX = Math.round(Math.max(0, Math.min(1, u)) * (paintedCanvas.width - 1));
     const centerY = Math.round((1 - Math.max(0, Math.min(1, v))) * (paintedCanvas.height - 1));
     const radius = Math.max(1, settings.size);
-    const depthDirection = settings.mode === 'push' ? 1 : -1;
     const normalizedStep = settings.depthAmount * settings.strength * 0.01;
+    const softenBlendBase = Math.min(1, settings.depthAmount * settings.strength);
+    const smoothingRadius = Math.max(2, Math.min(radius, Math.round((radius * 0.35) + (settings.depthAmount * 12))));
     const minX = Math.max(0, Math.floor(centerX - radius));
     const maxX = Math.min(paintedCanvas.width - 1, Math.ceil(centerX + radius));
     const minY = Math.max(0, Math.floor(centerY - radius));
@@ -633,8 +709,38 @@ export default function App() {
         }
 
         const pixelIndex = (py * paintedCanvas.width + px) * 4;
-        const currentValue = data[pixelIndex] / 255;
-        const nextValue = clampDepthSample(currentValue + (normalizedStep * brushInfluence * depthDirection));
+        const currentValue = sourceData[pixelIndex] / 255;
+        let nextValue = currentValue;
+
+        if (settings.mode === 'soften') {
+          let weightedDepthSum = 0;
+          let weightSum = 0;
+
+          for (let sampleY = Math.max(0, py - smoothingRadius); sampleY <= Math.min(paintedCanvas.height - 1, py + smoothingRadius); sampleY++) {
+            for (let sampleX = Math.max(0, px - smoothingRadius); sampleX <= Math.min(paintedCanvas.width - 1, px + smoothingRadius); sampleX++) {
+              const sampleDistance = Math.hypot(sampleX - px, sampleY - py);
+              if (sampleDistance > smoothingRadius) {
+                continue;
+              }
+
+              const sampleWeight = 1 - (sampleDistance / (smoothingRadius + 0.0001));
+              const sampleIndex = (sampleY * paintedCanvas.width + sampleX) * 4;
+              weightedDepthSum += (sourceData[sampleIndex] / 255) * sampleWeight;
+              weightSum += sampleWeight;
+            }
+          }
+
+          if (weightSum <= 0) {
+            continue;
+          }
+
+          const averageDepth = weightedDepthSum / weightSum;
+          const blendAmount = Math.min(1, softenBlendBase * brushInfluence);
+          nextValue = clampDepthSample(THREE.MathUtils.lerp(currentValue, averageDepth, blendAmount));
+        } else {
+          const depthDirection = settings.mode === 'push' ? 1 : -1;
+          nextValue = clampDepthSample(currentValue + (normalizedStep * brushInfluence * depthDirection));
+        }
 
         if (Math.abs(nextValue - currentValue) < 0.0005) {
           continue;
@@ -752,12 +858,19 @@ export default function App() {
     params: session.params,
     maxPointSize: session.maxPointSize,
     addPointSize: session.addPointSize,
+    addStrokeGap: session.addStrokeGap ?? 18,
+    addStrokeAssist: session.addStrokeAssist ?? 0.45,
+    addAlignToEdge: session.addAlignToEdge ?? false,
     showProjectionMesh: session.showProjectionMesh,
     projectionMeshOpacityPercent: session.projectionMeshOpacityPercent,
     activeTool: session.activeTool,
     toolInteractionMode: session.toolInteractionMode,
     visibilityBrushAction: session.visibilityBrushAction,
     depthAction: session.depthAction,
+    scaleAction: session.scaleAction,
+    scaleBrushAmount: session.scaleBrushAmount,
+    scalePointSizeMin: session.scalePointSizeMin,
+    scalePointSizeMax: session.scalePointSizeMax,
     addAction: session.addAction,
     addAppearanceSource: session.addAppearanceSource,
     isPickingCloneSource: session.isPickingCloneSource,
@@ -965,12 +1078,19 @@ export default function App() {
       params,
       maxPointSize,
       addPointSize,
+      addStrokeGap,
+      addStrokeAssist,
+      addAlignToEdge,
       showProjectionMesh,
       projectionMeshOpacityPercent,
       activeTool,
       toolInteractionMode,
       visibilityBrushAction,
       depthAction,
+      scaleAction,
+      scaleBrushAmount,
+      scalePointSizeMin,
+      scalePointSizeMax,
       addAction,
       addAppearanceSource,
       isPickingCloneSource,
@@ -1015,24 +1135,45 @@ export default function App() {
   };
 
   const applyPersistedSession = async (restoredSession: PersistedSession) => {
+    const restoredParams: SamplingParams = {
+      ...paramsRef.current,
+      ...restoredSession.params,
+      detailBoost: restoredSession.params?.detailBoost ?? 0,
+      fineDetailRescue: restoredSession.params?.fineDetailRescue ?? 0,
+    };
+
     setSourceImg(restoredSession.sourceImg ?? null);
     setDepthImg(restoredSession.depthImg ?? null);
     setPaintedDepthImg(restoredSession.paintedDepthImg ?? null);
     setShowDepthOverlay(restoredSession.showDepthOverlay ?? false);
     setDepthOverlayOpacityPercent(restoredSession.depthOverlayOpacityPercent ?? 45);
     setColorTransformPalettes(restoredSession.colorTransformPalettes ?? defaultColorTransformPalettes);
-    setParams(restoredSession.params);
-    paramsRef.current = restoredSession.params;
+    setParams(restoredParams);
+    paramsRef.current = restoredParams;
     setMaxPointSize(restoredSession.maxPointSize);
     maxPointSizeRef.current = restoredSession.maxPointSize;
     setAddPointSize(restoredSession.addPointSize);
     addPointSizeRef.current = restoredSession.addPointSize;
+    setAddStrokeGapState(restoredSession.addStrokeGap ?? 18);
+    addStrokeGapRef.current = restoredSession.addStrokeGap ?? 18;
+    setAddStrokeAssistState(restoredSession.addStrokeAssist ?? 0.45);
+    addStrokeAssistRef.current = restoredSession.addStrokeAssist ?? 0.45;
+    setAddAlignToEdge(restoredSession.addAlignToEdge ?? false);
+    addAlignToEdgeRef.current = restoredSession.addAlignToEdge ?? false;
     setShowProjectionMesh(restoredSession.showProjectionMesh);
     setProjectionMeshOpacityPercent(restoredSession.projectionMeshOpacityPercent);
     setActiveTool(restoredSession.activeTool);
     setToolInteractionMode(restoredSession.toolInteractionMode);
     setVisibilityBrushAction(restoredSession.visibilityBrushAction);
     setDepthAction(restoredSession.depthAction);
+    setScaleAction(restoredSession.scaleAction ?? 'grow');
+    scaleActionRef.current = restoredSession.scaleAction ?? 'grow';
+    setScaleBrushAmount(restoredSession.scaleBrushAmount ?? 0.25);
+    scaleBrushAmountRef.current = restoredSession.scaleBrushAmount ?? 0.25;
+    setScalePointSizeMinState(restoredSession.scalePointSizeMin ?? 0.1);
+    scalePointSizeMinRef.current = restoredSession.scalePointSizeMin ?? 0.1;
+    setScalePointSizeMaxState(restoredSession.scalePointSizeMax ?? 8);
+    scalePointSizeMaxRef.current = restoredSession.scalePointSizeMax ?? 8;
     setAddAction(restoredSession.addAction);
     setAddAppearanceSource(restoredSession.addAppearanceSource);
     setIsPickingCloneSource(restoredSession.isPickingCloneSource);
@@ -1054,7 +1195,7 @@ export default function App() {
       (index) => index >= 0 && index < restoredPoints.length
     );
 
-    const renderedPoints = materializePointsForDepth(restoredPoints, restoredSession.params);
+    const renderedPoints = materializePointsForDepth(restoredPoints, restoredParams);
     pointsRef.current = renderedPoints;
     selectedPointIndicesRef.current = validSelectedIndices;
     setPoints(renderedPoints);
@@ -1075,7 +1216,7 @@ export default function App() {
     if (renderedPoints.length > 0) {
       renderPoints(
         renderedPoints,
-        restoredSession.params.pointSizeMultiplier,
+        restoredParams.pointSizeMultiplier,
         restoredSession.maxPointSize
       );
     }
@@ -1104,7 +1245,7 @@ export default function App() {
 
         rebuildProjectionSurfaceMesh(
           { data: imageData.data, width: canvas.width, height: canvas.height },
-          restoredSession.params,
+          restoredParams,
           sourceImage.naturalWidth,
           sourceImage.naturalHeight,
           restoredSession.showProjectionMesh,
@@ -1373,12 +1514,19 @@ export default function App() {
     params,
     maxPointSize,
     addPointSize,
+    addStrokeGap,
+    addStrokeAssist,
+    addAlignToEdge,
     showProjectionMesh,
     projectionMeshOpacityPercent,
     activeTool,
     toolInteractionMode,
     visibilityBrushAction,
     depthAction,
+    scaleAction,
+    scaleBrushAmount,
+    scalePointSizeMin,
+    scalePointSizeMax,
     addAction,
     addAppearanceSource,
     isPickingCloneSource,
@@ -1490,7 +1638,7 @@ export default function App() {
       const settings = brushSettingsRef.current;
       const indicator = brushIndicatorRef.current;
 
-      if (settings.mode === 'push' || settings.mode === 'pull') {
+      if (settings.mode === 'push' || settings.mode === 'pull' || settings.mode === 'soften') {
         const projMesh = sceneRef.current.mesh;
 
         if (indicator && settings.enabled && !isAltNavigationRef.current) {
@@ -1524,7 +1672,12 @@ export default function App() {
 
         const changedPixelCount = paintDepthAtUv(hitUv.x, hitUv.y, settings, paramsRef.current);
         if (changedPixelCount > 0 && forcePaint) {
-          setStatus(`Painted depth ${settings.mode === 'push' ? 'out' : 'in'} across ${changedPixelCount} pixels`);
+          const actionLabel = settings.mode === 'push'
+            ? 'out'
+            : settings.mode === 'pull'
+              ? 'in'
+              : 'softened';
+          setStatus(`Painted depth ${actionLabel} across ${changedPixelCount} pixels`);
         }
         return;
       }
@@ -1534,23 +1687,67 @@ export default function App() {
         const projMesh = sceneRef.current.mesh;
         const currentAppearanceSource = addAppearanceSourceRef.current;
         const currentIsPickingCloneSource = isPickingCloneSourceRef.current;
+        const currentParams = paramsRef.current;
+        const pixelData = sourcePixelDataRef.current;
+        const indicatorWorldScale = currentParams.xyScale;
+        const getPreviewPointFromUv = (uv: THREE.Vector2) => {
+          if (!pixelData) {
+            return null;
+          }
+
+          const clampedU = Math.max(0, Math.min(1, uv.x));
+          const clampedV = Math.max(0, Math.min(1, uv.y));
+          const worldX = ((clampedU * (pixelData.width - 1)) - (pixelData.width / 2)) * currentParams.xyScale;
+          const worldY = -((((1 - clampedV) * (pixelData.height - 1)) - (pixelData.height / 2)) * currentParams.xyScale);
+          const depthSample = sampleDepthFromUv(clampedU, clampedV) ?? 0.5;
+          const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
+
+          return new THREE.Vector3(worldX, worldY, adjustedDepth * currentParams.depthScale);
+        };
 
         // Update brush indicator position against the projection mesh
         if (indicator && settings.enabled && !isAltNavigationRef.current) {
           indicator.visible = true;
           // For stamp show a small dot; for paint show the full radius
-          const indicatorSize = settings.mode === 'stamp' ? Math.max(10, settings.size * 0.15) : settings.size;
+          const indicatorSize = settings.mode === 'stamp'
+            ? Math.max(10 * indicatorWorldScale, settings.size * indicatorWorldScale * 0.15)
+            : settings.size * indicatorWorldScale;
           indicator.scale.set(indicatorSize, indicatorSize, 1);
           if (projMesh) {
             raycasterRef.current.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), sceneRef.current.camera);
             const meshHits = raycasterRef.current.intersectObject(projMesh);
-            if (meshHits.length > 0) {
+            if (meshHits.length > 0 && !addAlignToEdgeRef.current) {
+              // Non-edge mode: show indicator at mesh surface
               indicator.position.copy(meshHits[0].point);
               indicator.lookAt(sceneRef.current.camera.position);
-            } else {
-              const dir = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(sceneRef.current.camera).sub(sceneRef.current.camera.position).normalize();
-              indicator.position.copy(sceneRef.current.camera.position).add(dir.multiplyScalar(200));
+            } else if (meshHits.length > 0) {
+              const previewPoint = meshHits[0].uv ? getPreviewPointFromUv(meshHits[0].uv) : null;
+              indicator.position.copy(previewPoint ?? meshHits[0].point);
               indicator.lookAt(sceneRef.current.camera.position);
+            } else if (sceneRef.current.points) {
+              // No mesh hit — raycast against point cloud so cursor tracks walls
+              const pts = sceneRef.current.points;
+              const visAttrInd = pts.geometry.getAttribute('visibility') as THREE.BufferAttribute;
+              const prevThreshInd = raycasterRef.current.params.Points?.threshold ?? 1;
+              if (!raycasterRef.current.params.Points) raycasterRef.current.params.Points = { threshold: 1 };
+              raycasterRef.current.params.Points.threshold = Math.max(settings.size * indicatorWorldScale * 0.5, 10);
+              const ptHitsInd = raycasterRef.current.intersectObject(pts);
+              raycasterRef.current.params.Points.threshold = prevThreshInd;
+              let foundInd = false;
+              for (const ph of ptHitsInd) {
+                const idx = ph.index ?? -1;
+                if (idx >= 0 && visAttrInd.getX(idx) >= 0.5) {
+                  indicator.position.copy(ph.point);
+                  indicator.lookAt(sceneRef.current.camera.position);
+                  foundInd = true;
+                  break;
+                }
+              }
+              if (!foundInd) {
+                const dir = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(sceneRef.current.camera).sub(sceneRef.current.camera.position).normalize();
+                indicator.position.copy(sceneRef.current.camera.position).add(dir.multiplyScalar(200));
+                indicator.lookAt(sceneRef.current.camera.position);
+              }
             }
           }
         } else if (indicator) {
@@ -1562,12 +1759,8 @@ export default function App() {
         // stamp: only on initial click; paint: on every move while dragging
         if (settings.mode === 'stamp' && !forcePaint) return;
         if (!isBrushingRef.current && !forcePaint) return;
-        if (!projMesh) {
-          setStatus('Notice: Generate a point cloud first to enable paint mode');
-          return;
-        }
 
-        if (currentAppearanceSource === 'clone-selected' && settings.mode === 'stamp' && forcePaint && currentIsPickingCloneSource) {
+        if (currentAppearanceSource === 'clone-selected' && forcePaint && currentIsPickingCloneSource) {
           const nearestCloneSourceHit = findNearestHit(
             getVisibleProjectedPointIndices(),
             pointer.x,
@@ -1587,10 +1780,13 @@ export default function App() {
           return;
         }
 
+        if (!projMesh) {
+          setStatus('Notice: Generate a point cloud first to enable paint mode');
+          return;
+        }
+
         const cam = sceneRef.current.camera;
         const rc = raycasterRef.current;
-        const currentParams = paramsRef.current;
-        const pixelData = sourcePixelDataRef.current;
         const currentAddSize = addPointSizeRef.current;
 
         const getClonedPointAppearance = (): { r: number; g: number; b: number; size: number } | null => {
@@ -1628,6 +1824,63 @@ export default function App() {
 
         const getColorLuminance = ({ r, g, b }: { r: number; g: number; b: number }) => {
           return (0.299 * r) + (0.587 * g) + (0.114 * b);
+        };
+
+        const getWeightedSourceLuminanceAt = (px: number, py: number) => {
+          if (!pixelData) {
+            return 1;
+          }
+
+          const cpx = Math.max(0, Math.min(pixelData.width - 1, px));
+          const cpy = Math.max(0, Math.min(pixelData.height - 1, py));
+          const pi = (cpy * pixelData.width + cpx) * 4;
+          const alpha = pixelData.data[pi + 3] / 255;
+          const color = getPixelColor(cpx, cpy);
+          return getColorLuminance(color) * alpha;
+        };
+
+        const isRecoverableSourcePeak = (px: number, py: number) => {
+          if (!pixelData) {
+            return true;
+          }
+
+          const centerLuminance = getWeightedSourceLuminanceAt(px, py);
+          const softThreshold = Math.max(0.005, currentParams.brightnessThreshold * 0.55);
+          if (centerLuminance < softThreshold) {
+            return false;
+          }
+
+          let maxNeighborLuminance = 0;
+          let minNeighborLuminance = centerLuminance;
+
+          for (let offsetY = -1; offsetY <= 1; offsetY++) {
+            for (let offsetX = -1; offsetX <= 1; offsetX++) {
+              if (offsetX === 0 && offsetY === 0) {
+                continue;
+              }
+
+              const nextX = px + offsetX;
+              const nextY = py + offsetY;
+              if (nextX < 0 || nextX >= pixelData.width || nextY < 0 || nextY >= pixelData.height) {
+                continue;
+              }
+
+              const neighborLuminance = getWeightedSourceLuminanceAt(nextX, nextY);
+              maxNeighborLuminance = Math.max(maxNeighborLuminance, neighborLuminance);
+              minNeighborLuminance = Math.min(minNeighborLuminance, neighborLuminance);
+            }
+          }
+
+          return centerLuminance >= maxNeighborLuminance && (centerLuminance - minNeighborLuminance) >= 0.02;
+        };
+
+        const isPaintableSourcePixel = (px: number, py: number) => {
+          if (!pixelData) {
+            return true;
+          }
+
+          const strictThreshold = Math.max(0.005, currentParams.brightnessThreshold);
+          return getWeightedSourceLuminanceAt(px, py) >= strictThreshold || isRecoverableSourcePeak(px, py);
         };
 
         const getUvFromWorldPos = (worldPos: THREE.Vector3) => {
@@ -1749,38 +2002,355 @@ export default function App() {
           return sampleDepthFromUv(resolvedUv.u, resolvedUv.v) ?? 0.5;
         };
 
+        const getWorldFromUv = (u: number, v: number) => {
+          if (!pixelData) {
+            return { x: 0, y: 0 };
+          }
+
+          return {
+            x: ((Math.max(0, Math.min(1, u)) * (pixelData.width - 1)) - (pixelData.width / 2)) * currentParams.xyScale,
+            y: -((((1 - Math.max(0, Math.min(1, v))) * (pixelData.height - 1)) - (pixelData.height / 2)) * currentParams.xyScale)
+          };
+        };
+
         const newPoints: PointData[] = [];
 
-        if (settings.mode === 'stamp') {
-          // One precise point at cursor
-          rc.setFromCamera(new THREE.Vector2(mouse.x, mouse.y), cam);
+        const getMeshHitFromScreen = (screenX: number, screenY: number) => {
+          const nx = (screenX / pointer.width) * 2 - 1;
+          const ny = -(screenY / pointer.height) * 2 + 1;
+          rc.setFromCamera(new THREE.Vector2(nx, ny), cam);
           const hits = rc.intersectObject(projMesh);
-          if (hits.length > 0) {
-            const hp = hits[0].point;
-            const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
-            const { u, v } = resolvePointUv(hp, hits[0].uv);
-            const depthSample = resolveDepthSample(hp, hits[0].uv);
-            newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, depthSample, zOffset: 0, r, g, b, size, visibility: 1.0 });
+          if (hits.length === 0) {
+            return null;
+          }
+
+          return hits[0];
+        };
+
+        const appendPointAtWorld = (worldX: number, worldY: number, preferredUv?: { u: number; v: number } | null) => {
+          let rawPx = 0;
+          let rawPy = 0;
+
+          if (pixelData) {
+            rawPx = (worldX / currentParams.xyScale) + (pixelData.width / 2);
+            rawPy = (-worldY / currentParams.xyScale) + (pixelData.height / 2);
+            if (rawPx < 0 || rawPx > pixelData.width - 1 || rawPy < 0 || rawPy > pixelData.height - 1) {
+              return false;
+            }
+
+            const samplePx = Math.round(rawPx);
+            const samplePy = Math.round(rawPy);
+            if (!isPaintableSourcePixel(samplePx, samplePy)) {
+              return false;
+            }
+          }
+
+          const worldPos = new THREE.Vector3(worldX, worldY, 0);
+          const resolvedPointUv = preferredUv
+            ? { u: preferredUv.u, v: preferredUv.v }
+            : resolvePointUv(worldPos, null);
+          const depthSample = sampleDepthFromUv(resolvedPointUv.u, resolvedPointUv.v) ?? 0.5;
+          const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
+          worldPos.z = adjustedDepth * currentParams.depthScale;
+
+          const { r, g, b, size } = resolveAppearance(worldPos, new THREE.Vector2(resolvedPointUv.u, resolvedPointUv.v));
+          newPoints.push({
+            x: worldPos.x,
+            y: worldPos.y,
+            z: worldPos.z,
+            u: resolvedPointUv.u,
+            v: resolvedPointUv.v,
+            depthSample,
+            zOffset: 0,
+            r,
+            g,
+            b,
+            size,
+            visibility: 1.0
+          });
+
+          return true;
+        };
+
+        const appendPointFromHit = (hit: THREE.Intersection) => {
+          const preferredUv = hit.uv
+            ? { u: Math.max(0, Math.min(1, hit.uv.x)), v: Math.max(0, Math.min(1, hit.uv.y)) }
+            : null;
+
+          if (addAlignToEdgeRef.current || !preferredUv) {
+            return appendPointAtWorld(hit.point.x, hit.point.y, preferredUv);
+          }
+
+          if (preferredUv) {
+            const worldFromUv = getWorldFromUv(preferredUv.u, preferredUv.v);
+            return appendPointAtWorld(worldFromUv.x, worldFromUv.y, preferredUv);
+          }
+
+          return appendPointAtWorld(hit.point.x, hit.point.y, preferredUv);
+        };
+
+        const appendStrokeStamp = (centerX: number, centerY: number) => {
+          const brushRadius = Math.max(1, settings.size) * currentParams.xyScale;
+          const pointGap = clampAddStrokeGap(addStrokeGapRef.current) * currentParams.xyScale;
+          const densityFactor = THREE.MathUtils.lerp(0.35, 1, settings.strength);
+          const estimatedCount = Math.max(1, Math.round((Math.PI * brushRadius * brushRadius * densityFactor) / Math.max(pointGap * pointGap, 1)));
+          let appendedAnyPoint = false;
+
+          for (let sampleIndex = 0; sampleIndex < estimatedCount; sampleIndex++) {
+            const angle = Math.random() * Math.PI * 2;
+            const distance = Math.sqrt(Math.random()) * brushRadius;
+            const brushInfluence = getBrushInfluence(distance / brushRadius, settings.softness);
+            if (brushInfluence <= 0) {
+              continue;
+            }
+
+            const appendedPoint = appendPointAtWorld(
+              centerX + (Math.cos(angle) * distance),
+              centerY + (Math.sin(angle) * distance)
+            );
+            appendedAnyPoint = appendedAnyPoint || appendedPoint;
+          }
+
+          if (!appendedAnyPoint) {
+            appendPointAtWorld(centerX, centerY);
+          }
+        };
+
+        // ── 3D free-paint helpers ────────────────────────────────────────────────
+        // Resolves the 3-D stamp center for free-paint mode.
+        // Priority order:
+        //   1. Depth-map projection mesh hit (exact surface for top/front faces)
+        //   2. Raycast against the existing THREE.Points cloud (hits wall points exactly)
+        //   3. Screen-nearest visible point world position (last fallback)
+        const get3DPaintCenter = (screenX: number, screenY: number): THREE.Vector3 => {
+          const nx = (screenX / pointer.width) * 2 - 1;
+          const ny = -(screenY / pointer.height) * 2 + 1;
+
+          // 1. Projection mesh (top face / flat surfaces)
+          const meshHit = getMeshHitFromScreen(screenX, screenY);
+          if (meshHit) return meshHit.point.clone();
+
+          // 2. Raycast against existing point cloud — correctly hits extrusion walls
+          if (sceneRef.current?.points) {
+            const pts = sceneRef.current.points;
+            const visibilityAttr = pts.geometry.getAttribute('visibility') as THREE.BufferAttribute;
+            if (!rc.params.Points) rc.params.Points = { threshold: 1 };
+            const savedThreshold = rc.params.Points.threshold;
+            rc.params.Points.threshold = Math.max(settings.size * currentParams.xyScale * 0.5, 10);
+            rc.setFromCamera(new THREE.Vector2(nx, ny), cam);
+            const ptHits = rc.intersectObject(pts);
+            rc.params.Points.threshold = savedThreshold;
+            for (const ptHit of ptHits) {
+              const idx = ptHit.index ?? -1;
+              if (idx >= 0 && visibilityAttr.getX(idx) >= 0.5) {
+                return ptHit.point.clone();
+              }
+            }
+          }
+
+          // 3. Screen-nearest visible point world position
+          if (sceneRef.current?.points) {
+            const pAttr = sceneRef.current.points.geometry.getAttribute('position') as THREE.BufferAttribute;
+            const visHits = getVisibleProjectedPointIndices();
+            const nearestRef = findNearestHit(visHits, screenX, screenY, Number.POSITIVE_INFINITY);
+            if (nearestRef) {
+              const localPt = new THREE.Vector3().fromBufferAttribute(pAttr, nearestRef.index);
+              return localPt.applyMatrix4(sceneRef.current.points.matrixWorld);
+            }
+          }
+
+          // Last resort: fixed distance along view ray
+          const dir = new THREE.Vector3(nx, ny, 0.5).unproject(cam).sub(cam.position).normalize();
+          return cam.position.clone().addScaledVector(dir, 200);
+        };
+
+        const appendPointAt3DWorld = (worldPos: THREE.Vector3): boolean => {
+          if (clonedAppearance) {
+            // zOffset must encode the intended z so materializePointsForDepth preserves it.
+            // Using depthSample=0.5 baseline: zOffset = worldPos.z - 0.5*depthScale
+            const cloneZOffset = worldPos.z - (0.5 * currentParams.depthScale);
+            newPoints.push({
+              x: worldPos.x, y: worldPos.y, z: worldPos.z,
+              u: 0.5, v: 0.5,
+              depthSample: 0.5,
+              zOffset: cloneZOffset,
+              r: clonedAppearance.r, g: clonedAppearance.g, b: clonedAppearance.b,
+              size: clonedAppearance.size,
+              visibility: 1.0
+            });
+            return true;
+          }
+
+          // Find nearest existing point in 3D world space for colour.
+          // Using 3D distance (not screen projection) avoids borrowing edge-rim UVs for wall points.
+          let u = 0.5;
+          let v = 0.5;
+          {
+            let bestD2 = Infinity;
+            for (const ep of pointsRef.current) {
+              if (ep.visibility < 0.5) continue;
+              const d2 = (ep.x - worldPos.x) ** 2 + (ep.y - worldPos.y) ** 2 + (ep.z - worldPos.z) ** 2;
+              if (d2 < bestD2) {
+                bestD2 = d2;
+                u = ep.u ?? 0.5;
+                v = ep.v ?? 0.5;
+              }
+            }
+          }
+          const colorUv = new THREE.Vector2(u, v);
+          const sampledColor = sampleColor(worldPos, colorUv);
+          // materializePointsForDepth recalculates z = depthSample*depthScale + zOffset.
+          // We must store zOffset so that formula yields worldPos.z exactly,
+          // otherwise the point snaps back to the depth-map surface (edge depth).
+          const depthSample = sampleDepthFromUv(u, v) ?? 0.5;
+          const adjustedDepth = currentParams.invertDepth ? 1 - depthSample : depthSample;
+          const zOffset = worldPos.z - (adjustedDepth * currentParams.depthScale);
+          newPoints.push({
+            x: worldPos.x, y: worldPos.y, z: worldPos.z,
+            u, v, depthSample, zOffset,
+            r: sampledColor.r, g: sampledColor.g, b: sampledColor.b,
+            size: currentAddSize,
+            visibility: 1.0
+          });
+          return true;
+        };
+
+        // cursorX/Y are pixel coords of the actual mouse cursor (scatter is centered here).
+        // center3D is used ONLY to extract NDC-Z (surface depth layer) for unprojection.
+        const appendStrokeStamp3D = (cursorX: number, cursorY: number, center3D: THREE.Vector3) => {
+          const brushScreenRadius = Math.max(1, settings.size);
+          const brushWorldRadius = brushScreenRadius * currentParams.xyScale;
+          const pointGap = clampAddStrokeGap(addStrokeGapRef.current) * currentParams.xyScale;
+          const densityFactor = THREE.MathUtils.lerp(0.35, 1, settings.strength);
+          const estimatedCount = Math.max(1, Math.round((Math.PI * brushWorldRadius * brushWorldRadius * densityFactor) / Math.max(pointGap * pointGap, 1)));
+
+          // Get the NDC-Z of the surface under the cursor, so scatter samples unproject
+          // onto that same depth plane (not floating in space).
+          const centerNdcZ = center3D.clone().project(cam).z;
+
+          for (let si = 0; si < estimatedCount; si++) {
+            const angle = Math.random() * Math.PI * 2;
+            const distFrac = Math.sqrt(Math.random()); // uniform disk 0..1
+            const infl = getBrushInfluence(distFrac, settings.softness);
+            if (infl <= 0) continue;
+
+            // Always scatter in screen-pixel space around the REAL cursor position.
+            const sx = cursorX + Math.cos(angle) * distFrac * brushScreenRadius;
+            const sy = cursorY + Math.sin(angle) * distFrac * brushScreenRadius;
+
+            // Try mesh surface first (covers the top face)
+            const meshHit = getMeshHitFromScreen(sx, sy);
+            if (meshHit) {
+              appendPointAt3DWorld(meshHit.point.clone());
+              continue;
+            }
+
+            // No mesh hit (wall / open area): unproject at center's NDC-Z so new points
+            // sit on the same surface plane as the hit center (wall, etc.).
+            const sNx = (sx / pointer.width) * 2 - 1;
+            const sNy = -(sy / pointer.height) * 2 + 1;
+            const scatterPos = new THREE.Vector3(sNx, sNy, centerNdcZ).unproject(cam);
+            appendPointAt3DWorld(scatterPos);
+          }
+        };
+        // ────────────────────────────────────────────────────────────────────────
+
+        if (settings.mode === 'stamp') {
+          if (addAlignToEdgeRef.current) {
+            // Edge-align stamp: snap to mesh UV
+            const centerHit = getMeshHitFromScreen(pointer.x, pointer.y);
+            if (centerHit) appendPointFromHit(centerHit);
+          } else {
+            // Free stamp: place at exact cursor 3D position
+            const center3D = get3DPaintCenter(pointer.x, pointer.y);
+            appendPointAt3DWorld(center3D);
           }
         } else {
-          // Paint: scatter N points within brush radius
-          const maxCount = Math.max(1, Math.round(settings.size / 30));
-          for (let n = 0; n < maxCount; n++) {
-            if (Math.random() > settings.strength) continue;
-            const angle = Math.random() * Math.PI * 2;
-            const dist = Math.sqrt(Math.random()) * settings.size; // sqrt for uniform disc distribution
-            const ox = Math.cos(angle) * dist;
-            const oy = Math.sin(angle) * dist;
-            const nx = ((pointer.x + ox) / pointer.width) * 2 - 1;
-            const ny = -((pointer.y + oy) / pointer.height) * 2 + 1;
-            rc.setFromCamera(new THREE.Vector2(nx, ny), cam);
-            const hits = rc.intersectObject(projMesh);
-            if (hits.length > 0) {
-              const hp = hits[0].point;
-              const { r, g, b, size } = resolveAppearance(hp, hits[0].uv);
-              const { u, v } = resolvePointUv(hp, hits[0].uv);
-              const depthSample = resolveDepthSample(hp, hits[0].uv);
-              newPoints.push({ x: hp.x, y: hp.y, z: hp.z, u, v, depthSample, zOffset: 0, r, g, b, size, visibility: 1.0 });
+          const rawPointer = { x: pointer.x, y: pointer.y };
+          const assistAmount = addStrokeAssistRef.current;
+          const previousSmoothedPointer = addStrokeSmoothedPointerRef.current ?? rawPointer;
+          const smoothedPointer = forcePaint
+            ? rawPointer
+            : {
+                x: THREE.MathUtils.lerp(previousSmoothedPointer.x, rawPointer.x, 1 - assistAmount),
+                y: THREE.MathUtils.lerp(previousSmoothedPointer.y, rawPointer.y, 1 - assistAmount)
+              };
+          addStrokeSmoothedPointerRef.current = smoothedPointer;
+
+          if (!addAlignToEdgeRef.current) {
+            // ── Free 3-D paint: cursor XY from mouse, depth from mesh or nearest point ──
+            const center3D = get3DPaintCenter(smoothedPointer.x, smoothedPointer.y);
+
+            const pointGap = clampAddStrokeGap(addStrokeGapRef.current) * currentParams.xyScale;
+            const lastEmitWorld = addStrokeLastEmitWorldRef.current;
+
+            if (!lastEmitWorld) {
+              appendStrokeStamp3D(smoothedPointer.x, smoothedPointer.y, center3D);
+              addStrokeLastEmitPointerRef.current = { ...smoothedPointer };
+              addStrokeLastEmitWorldRef.current = { x: center3D.x, y: center3D.y, z: center3D.z };
+            } else {
+              const prevCenter = new THREE.Vector3(lastEmitWorld.x, lastEmitWorld.y, lastEmitWorld.z ?? center3D.z);
+              const lastEmitPtr = addStrokeLastEmitPointerRef.current ?? smoothedPointer;
+              const worldDistance = center3D.distanceTo(prevCenter);
+
+              if (worldDistance >= pointGap) {
+                const stepDir = center3D.clone().sub(prevCenter).normalize();
+                let traveled = pointGap;
+                let lastStampedPos = prevCenter.clone();
+
+                while (traveled <= worldDistance) {
+                  const samplePos = prevCenter.clone().addScaledVector(stepDir, traveled);
+                  // For stroke interpolation, samplePos IS the intended 3D center —
+                  // project it to screen to get the matching pixel coords.
+                  const t = traveled / worldDistance;
+                  const interpSx = THREE.MathUtils.lerp(lastEmitPtr.x, smoothedPointer.x, t);
+                  const interpSy = THREE.MathUtils.lerp(lastEmitPtr.y, smoothedPointer.y, t);
+                  appendStrokeStamp3D(interpSx, interpSy, samplePos);
+                  lastStampedPos.copy(samplePos);
+                  traveled += pointGap;
+                }
+
+                addStrokeLastEmitPointerRef.current = { ...smoothedPointer };
+                addStrokeLastEmitWorldRef.current = { x: lastStampedPos.x, y: lastStampedPos.y, z: lastStampedPos.z };
+              }
+            }
+          } else {
+            // ── Edge-align mode: mesh-UV-based path ─────────────────────────────
+            const centerHit = getMeshHitFromScreen(smoothedPointer.x, smoothedPointer.y);
+            if (!centerHit) return;
+
+            const centerWorld = { x: centerHit.point.x, y: centerHit.point.y };
+            const pointGap = clampAddStrokeGap(addStrokeGapRef.current) * currentParams.xyScale;
+            const lastEmitWorld = addStrokeLastEmitWorldRef.current;
+
+            if (!lastEmitWorld) {
+              appendStrokeStamp(centerWorld.x, centerWorld.y);
+              addStrokeLastEmitPointerRef.current = { ...smoothedPointer };
+              addStrokeLastEmitWorldRef.current = { x: centerWorld.x, y: centerWorld.y };
+            } else {
+              const deltaWorldX = centerWorld.x - lastEmitWorld.x;
+              const deltaWorldY = centerWorld.y - lastEmitWorld.y;
+              const worldDistance = Math.hypot(deltaWorldX, deltaWorldY);
+
+              if (worldDistance >= pointGap) {
+                const directionX = deltaWorldX / worldDistance;
+                const directionY = deltaWorldY / worldDistance;
+                let traveled = pointGap;
+                let lastStampedX = lastEmitWorld.x;
+                let lastStampedY = lastEmitWorld.y;
+
+                while (traveled <= worldDistance) {
+                  const sampleX = lastEmitWorld.x + directionX * traveled;
+                  const sampleY = lastEmitWorld.y + directionY * traveled;
+                  appendStrokeStamp(sampleX, sampleY);
+                  lastStampedX = sampleX;
+                  lastStampedY = sampleY;
+                  traveled += pointGap;
+                }
+
+                addStrokeLastEmitPointerRef.current = { ...smoothedPointer };
+                addStrokeLastEmitWorldRef.current = { x: lastStampedX, y: lastStampedY };
+              }
             }
           }
         }
@@ -1794,19 +2364,30 @@ export default function App() {
       // ─────────────────────────────────────────────────────────────────────────
 
       const selectionHits = getVisibleProjectedPointIndices();
+      const pointCloud = sceneRef.current.points;
+      const geometry = pointCloud.geometry;
+      const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+      const getFreeformBrushCenter = () => {
+        const anchorHit = findNearestHit(selectionHits, pointer.x, pointer.y, Number.POSITIVE_INFINITY);
+        if (!anchorHit) {
+          return null;
+        }
+
+        const anchorLocalPoint = new THREE.Vector3().fromBufferAttribute(positionAttr, anchorHit.index);
+        const anchorWorldPoint = anchorLocalPoint.applyMatrix4(pointCloud.matrixWorld);
+        const anchorDepth = anchorWorldPoint.clone().project(sceneRef.current.camera).z;
+
+        return new THREE.Vector3(mouse.x, mouse.y, anchorDepth).unproject(sceneRef.current.camera);
+      };
+      const freeformBrushCenter = getFreeformBrushCenter();
 
       if (indicator) {
         if (settings.enabled && !isAltNavigationRef.current) {
           indicator.visible = true;
           indicator.scale.set(settings.size, settings.size, 1);
-          const nearestHit = findNearestHit(selectionHits, pointer.x, pointer.y, Number.POSITIVE_INFINITY);
 
-          if (nearestHit && sceneRef.current?.points) {
-            const pointCloud = sceneRef.current.points;
-            const positionAttr = pointCloud.geometry.getAttribute('position') as THREE.BufferAttribute;
-            const localPoint = new THREE.Vector3().fromBufferAttribute(positionAttr, nearestHit.index);
-            const worldPoint = localPoint.applyMatrix4(pointCloud.matrixWorld);
-            indicator.position.copy(worldPoint);
+          if (freeformBrushCenter) {
+            indicator.position.copy(freeformBrushCenter);
             indicator.lookAt(sceneRef.current.camera.position);
           } else {
             const dir = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(sceneRef.current.camera).sub(sceneRef.current.camera.position).normalize();
@@ -1819,16 +2400,12 @@ export default function App() {
       }
 
       // ONLY process point physics if we are actually clicking (or forced)
-      const nearestBrushHit = findNearestHit(selectionHits, pointer.x, pointer.y, Math.max(settings.size, 18));
-
-      if (nearestBrushHit && settings.enabled && !isAltNavigationRef.current && (isBrushingRef.current || forcePaint)) {
-        const pointCloud = sceneRef.current.points;
-        const geometry = pointCloud.geometry;
+      if (freeformBrushCenter && settings.enabled && !isAltNavigationRef.current && (isBrushingRef.current || forcePaint)) {
         const visibilityAttr = geometry.getAttribute('visibility') as THREE.BufferAttribute;
-        const positionAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+        const sizeAttr = geometry.getAttribute('size') as THREE.BufferAttribute;
         const pointIndexLabels = sceneRef.current.pointIndexLabels;
 
-        const center = new THREE.Vector3().fromBufferAttribute(positionAttr, nearestBrushHit.index).applyMatrix4(pointCloud.matrixWorld);
+        const center = freeformBrushCenter;
         const pos = new THREE.Vector3();
         const worldPos = new THREE.Vector3();
         const selectedIndices: number[] = [];
@@ -1854,22 +2431,64 @@ export default function App() {
 
             selectedIndices.push(i);
             affectedPointCount += 1;
-          } else if (settings.mode === 'push' || settings.mode === 'pull') {
+          } else if (settings.mode === 'push' || settings.mode === 'pull' || settings.mode === 'soften') {
             if (brushInfluence <= 0) {
               continue;
             }
 
-            const depthDirection = settings.mode === 'push' ? 1 : -1;
             const point = pointsRef.current[i];
             if (!point) {
               continue;
             }
 
-            point.zOffset = getClampedPointZOffset(
-              point,
-              paramsRef.current,
-              (point.zOffset ?? 0) + (depthDelta * brushInfluence * depthDirection)
-            );
+            if (settings.mode === 'soften') {
+              let weightedOffsetSum = 0;
+              let weightSum = 0;
+
+              for (let j = 0; j < visibilityAttr.count; j++) {
+                const neighbor = pointsRef.current[j];
+                if (!neighbor) {
+                  continue;
+                }
+
+                const neighborDistance = Math.hypot(
+                  positionAttr.getX(j) - center.x,
+                  positionAttr.getY(j) - center.y,
+                  positionAttr.getZ(j) - center.z
+                );
+
+                if (neighborDistance > settings.size) {
+                  continue;
+                }
+
+                const neighborWeight = getBrushInfluence(neighborDistance / settings.size, settings.softness);
+                if (neighborWeight <= 0) {
+                  continue;
+                }
+
+                weightedOffsetSum += (neighbor.zOffset ?? 0) * neighborWeight;
+                weightSum += neighborWeight;
+              }
+
+              if (weightSum <= 0) {
+                continue;
+              }
+
+              const averageOffset = weightedOffsetSum / weightSum;
+              const blendAmount = Math.min(1, settings.depthAmount * settings.strength * brushInfluence);
+              point.zOffset = getClampedPointZOffset(
+                point,
+                paramsRef.current,
+                THREE.MathUtils.lerp(point.zOffset ?? 0, averageOffset, blendAmount)
+              );
+            } else {
+              const depthDirection = settings.mode === 'push' ? 1 : -1;
+              point.zOffset = getClampedPointZOffset(
+                point,
+                paramsRef.current,
+                (point.zOffset ?? 0) + (depthDelta * brushInfluence * depthDirection)
+              );
+            }
             const nextZ = getRenderedPointZ(point, paramsRef.current);
             point.z = nextZ;
             positionAttr.setZ(i, nextZ);
@@ -1877,12 +2496,43 @@ export default function App() {
               pointIndexLabels.children[i].position.z = nextZ;
             }
             affectedPointCount += 1;
-          } else {
-            const pointNoise = Math.abs(
-              Math.sin(worldPos.x * 12.9898 + worldPos.y * 78.233 + worldPos.z * 37.719)
+          } else if (settings.mode === 'grow' || settings.mode === 'shrink') {
+            if (brushInfluence <= 0) {
+              continue;
+            }
+
+            const point = pointsRef.current[i];
+            if (!point) {
+              continue;
+            }
+
+            const currentSize = sizeAttr.getX(i);
+            const scaleDelta = scaleBrushAmountRef.current * settings.strength * brushInfluence;
+            const nextSize = THREE.MathUtils.clamp(
+              settings.mode === 'grow'
+                ? currentSize * (1 + scaleDelta)
+                : currentSize * Math.max(0.05, 1 - scaleDelta),
+              scalePointSizeMinRef.current,
+              scalePointSizeMaxRef.current
             );
 
-            if (!shouldApplyBrushEffect(normalizedDistance, settings.softness, settings.strength, pointNoise)) {
+            if (Math.abs(nextSize - currentSize) < 0.0005) {
+              continue;
+            }
+
+            point.size = nextSize;
+            sizeAttr.setX(i, nextSize);
+            if (pointIndexLabels?.children[i]) {
+              pointIndexLabels.children[i].position.y = positionAttr.getY(i) + Math.max(nextSize * 4, 4);
+            }
+            affectedPointCount += 1;
+          } else {
+            if (brushInfluence <= 0) {
+              continue;
+            }
+
+            const influenceThreshold = 1 - settings.strength;
+            if (brushInfluence < influenceThreshold) {
               continue;
             }
 
@@ -1899,10 +2549,21 @@ export default function App() {
             }
           }
         } else {
-          if (settings.mode === 'push' || settings.mode === 'pull') {
+          if (settings.mode === 'push' || settings.mode === 'pull' || settings.mode === 'soften') {
             positionAttr.needsUpdate = true;
             if (forcePaint && affectedPointCount > 0) {
-              setStatus(`Depth brushed ${affectedPointCount} points ${settings.mode === 'push' ? 'out' : 'in'}`);
+              const actionLabel = settings.mode === 'push'
+                ? 'out'
+                : settings.mode === 'pull'
+                  ? 'in'
+                  : 'smooth';
+              setStatus(`Depth brushed ${affectedPointCount} points ${actionLabel}`);
+            }
+          } else if (settings.mode === 'grow' || settings.mode === 'shrink') {
+            sizeAttr.needsUpdate = true;
+            syncPointIndexLabelPositions();
+            if (forcePaint && affectedPointCount > 0) {
+              setStatus(`Scaled ${affectedPointCount} points ${settings.mode === 'grow' ? 'up' : 'down'}`);
             }
           }
           visibilityAttr.needsUpdate = true;
@@ -2010,6 +2671,9 @@ export default function App() {
         if (brushSettingsRef.current.mode !== 'select') {
           pushToHistory();
         }
+        addStrokeSmoothedPointerRef.current = null;
+        addStrokeLastEmitPointerRef.current = null;
+        addStrokeLastEmitWorldRef.current = null;
         setIsBrushing(true);
         applyBrush(e.clientX, e.clientY, true);
       }
@@ -2061,6 +2725,9 @@ export default function App() {
         finishedBrushMode !== 'select' &&
         finishedBrushMode !== 'push' &&
         finishedBrushMode !== 'pull' &&
+        finishedBrushMode !== 'soften' &&
+        finishedBrushMode !== 'grow' &&
+        finishedBrushMode !== 'shrink' &&
         finishedBrushMode !== 'paint' &&
         finishedBrushMode !== 'stamp'
       ) {
@@ -2072,6 +2739,9 @@ export default function App() {
       }
 
       setIsBrushing(false);
+      addStrokeSmoothedPointerRef.current = null;
+      addStrokeLastEmitPointerRef.current = null;
+      addStrokeLastEmitWorldRef.current = null;
     };
 
     renderer.domElement.addEventListener('mousedown', handleMouseDown);
@@ -2181,6 +2851,10 @@ export default function App() {
     toolInteractionMode,
     visibilityBrushAction,
     depthAction,
+    scaleAction,
+    scaleBrushAmount,
+    scalePointSizeMin,
+    scalePointSizeMax,
     addAction,
     addAppearanceSource,
     isPickingCloneSource,
@@ -2540,8 +3214,21 @@ export default function App() {
     syncSelectedPointVisibility(selectedPointIndices);
   }, [selectedPointIndices, points]);
 
+  const toggleCloneSourcePicking = () => {
+    if (activeTool !== 'add' || addAppearanceSource !== 'clone-selected') {
+      return;
+    }
+
+    setIsPickingCloneSource((prev) => {
+      const nextValue = !prev;
+      setStatus(nextValue ? 'Clone source picking enabled' : 'Clone source picking disabled');
+      return nextValue;
+    });
+  };
+
   useKeyboardShortcuts({
     brushEnabled: brushSettings.enabled,
+    cloneSourceShortcutEnabled: activeTool === 'add' && addAppearanceSource === 'clone-selected',
     isEditableTarget,
     selectionModeEnabledRef,
     hideSelectedPoints,
@@ -2550,7 +3237,8 @@ export default function App() {
     setBrushSoftnessPercent,
     handleUndo,
     handleRedo,
-    handleSaveSessionToFile
+    handleSaveSessionToFile,
+    toggleCloneSourcePicking
   });
 
   const addNewPoints = (newPoints: PointData[]) => {
@@ -2773,7 +3461,11 @@ export default function App() {
         }
       }
 
-      const blob = await exportToGLB(exportedPoints);
+      const blob = await exportToGLB(exportedPoints, {
+        imageWidth: stats.width,
+        imageHeight: stats.height,
+        xyScale: params.xyScale,
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -2844,6 +3536,12 @@ export default function App() {
             {hasSessionFileHandle ? 'Save Session' : 'Save Session As'}
           </button>
           <button
+            onClick={() => handleSaveSessionToFile(true)}
+            className="px-3 py-1.5 border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest"
+          >
+            Save As...
+          </button>
+          <button
             onClick={handleLoadSessionFromFile}
             className="px-3 py-1.5 border border-tech-subtle-border text-[10px] font-mono hover:bg-tech-border transition-colors uppercase tracking-widest"
           >
@@ -2908,12 +3606,19 @@ export default function App() {
           addedPointCount={addedPointCount}
           cloneSourceIndex={cloneSourceIndex}
           addPointSize={addPointSize}
+          addStrokeGap={addStrokeGap}
+          addStrokeAssistPercent={Math.round(addStrokeAssist * 100)}
+          addAlignToEdge={addAlignToEdge}
           brushSettings={brushSettings}
           brushDepthPercent={brushDepthPercent}
           brushSoftnessPercent={brushSoftnessPercent}
           brushStrengthPercent={brushStrengthPercent}
           colorTransformPalettes={colorTransformPalettes}
           depthAction={depthAction}
+          scaleAction={scaleAction}
+          scaleBrushAmountPercent={scaleBrushAmountPercent}
+          scalePointSizeMin={scalePointSizeMin}
+          scalePointSizeMax={scalePointSizeMax}
           depthImg={depthImg}
           linkedDepthPsdName={linkedDepthPsdName}
           showDepthOverlay={showDepthOverlay}
@@ -2957,6 +3662,10 @@ export default function App() {
           setBrushSoftnessPercent={setBrushSoftnessPercent}
           setBrushStrengthPercent={setBrushStrengthPercent}
           setDepthAction={setDepthAction}
+          setScaleAction={setScaleAction}
+          setScaleBrushAmountPercent={setScaleBrushAmountPercent}
+          setScalePointSizeMin={setScalePointSizeMin}
+          setScalePointSizeMax={setScalePointSizeMax}
           setShowDepthOverlay={setShowDepthOverlay}
           setDepthOverlayOpacityPercent={setDepthOverlayOpacityPercent}
           setParams={setParams}
@@ -2975,6 +3684,9 @@ export default function App() {
           maxPointSize={maxPointSize}
           setMaxPointSize={setMaxPointSize}
           setAddPointSize={setAddPointSize}
+          setAddStrokeGap={setAddStrokeGap}
+          setAddStrokeAssistPercent={setAddStrokeAssistPercent}
+          setAddAlignToEdge={setAddAlignToEdge}
           showProjectionMesh={showProjectionMesh}
           setShowProjectionMesh={setShowProjectionMesh}
         />

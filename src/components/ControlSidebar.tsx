@@ -2,7 +2,7 @@ import React from 'react';
 import { Upload, Box, Eraser, Paintbrush, Undo, Redo, Layers, ChevronRight } from 'lucide-react';
 import { SamplingParams } from '../processing/pointSampler';
 import { BrushMode } from '../processing/pointInteraction';
-import type { ActiveTool, AddAction, AddAppearanceSource, DepthAction, ToolInteractionMode, VisibilityBrushAction } from '../types/app';
+import type { ActiveTool, AddAction, AddAppearanceSource, DepthAction, ScaleAction, ToolInteractionMode, VisibilityBrushAction } from '../types/app';
 
 type SavedSelection = {
   id: string;
@@ -36,6 +36,10 @@ type ControlSidebarProps = {
     white: string;
   };
   depthAction: DepthAction;
+  scaleAction: ScaleAction;
+  scaleBrushAmountPercent: number;
+  scalePointSizeMin: number;
+  scalePointSizeMax: number;
   depthOverlayOpacityPercent: number;
   depthImg: string | null;
   linkedDepthPsdName: string | null;
@@ -78,6 +82,10 @@ type ControlSidebarProps = {
   setBrushSoftnessPercent: (percent: number) => void;
   setBrushStrengthPercent: (percent: number) => void;
   setDepthAction: React.Dispatch<React.SetStateAction<DepthAction>>;
+  setScaleAction: React.Dispatch<React.SetStateAction<ScaleAction>>;
+  setScaleBrushAmountPercent: (percent: number) => void;
+  setScalePointSizeMin: (value: number) => void;
+  setScalePointSizeMax: (value: number) => void;
   setDepthOverlayOpacityPercent: (value: number) => void;
   setParams: React.Dispatch<React.SetStateAction<SamplingParams>>;
   setShowDepthOverlay: (value: boolean) => void;
@@ -97,6 +105,12 @@ type ControlSidebarProps = {
   setMaxPointSize: (value: number) => void;
   addPointSize: number;
   setAddPointSize: (value: number) => void;
+  addStrokeGap: number;
+  setAddStrokeGap: (value: number) => void;
+  addStrokeAssistPercent: number;
+  setAddStrokeAssistPercent: (percent: number) => void;
+  addAlignToEdge: boolean;
+  setAddAlignToEdge: (value: boolean) => void;
   showProjectionMesh: boolean;
   setShowProjectionMesh: (value: boolean) => void;
 };
@@ -139,6 +153,10 @@ export function ControlSidebar({
   brushStrengthPercent,
   colorTransformPalettes,
   depthAction,
+  scaleAction,
+  scaleBrushAmountPercent,
+  scalePointSizeMin,
+  scalePointSizeMax,
   depthOverlayOpacityPercent,
   depthImg,
   linkedDepthPsdName,
@@ -181,6 +199,10 @@ export function ControlSidebar({
   setBrushSoftnessPercent,
   setBrushStrengthPercent,
   setDepthAction,
+  setScaleAction,
+  setScaleBrushAmountPercent,
+  setScalePointSizeMin,
+  setScalePointSizeMax,
   setDepthOverlayOpacityPercent,
   setParams,
   setShowDepthOverlay,
@@ -200,6 +222,12 @@ export function ControlSidebar({
   setMaxPointSize,
   addPointSize,
   setAddPointSize,
+  addStrokeGap,
+  setAddStrokeGap,
+  addStrokeAssistPercent,
+  setAddStrokeAssistPercent,
+  addAlignToEdge,
+  setAddAlignToEdge,
   showProjectionMesh,
   setShowProjectionMesh
 }: ControlSidebarProps) {
@@ -354,6 +382,26 @@ export function ControlSidebar({
             />
           </div>
           <div>
+            <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Add Detail</span><span>{Math.round((params.detailBoost ?? 0) * 100)}%</span></div>
+            <input
+              type="range" min="0" max="1" step="0.01"
+              value={params.detailBoost ?? 0}
+              onChange={(e) => setParams({ ...params, detailBoost: parseFloat(e.target.value) })}
+              className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+            />
+            <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Adds a secondary peak-detail pass without changing the primary threshold capture</div>
+          </div>
+          <div>
+            <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Fine Detail Rescue</span><span>{Math.round((params.fineDetailRescue ?? 0) * 100)}%</span></div>
+            <input
+              type="range" min="0" max="1" step="0.01"
+              value={params.fineDetailRescue ?? 0}
+              onChange={(e) => setParams({ ...params, fineDetailRescue: parseFloat(e.target.value) })}
+              className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+            />
+            <div className="text-[8px] opacity-30 mt-1 font-mono uppercase">Adds a second pass for missing small shapes after the main pass without removing first-pass points</div>
+          </div>
+          <div>
             <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Sampling Step</span><span>{params.samplingStep}PX</span></div>
             <input
               type="range" min="1" max="20" step="1"
@@ -437,7 +485,7 @@ export function ControlSidebar({
 
       <AccordionSection title="03 // Tool Stack" defaultOpen>
         <div className="space-y-3 p-3 bg-tech-header/50 border border-tech-border rounded">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <button
               onClick={() => setActiveTool('visibility')}
               className={`py-2 border rounded text-[10px] uppercase font-mono transition-all ${activeTool === 'visibility' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
@@ -449,6 +497,12 @@ export function ControlSidebar({
               className={`py-2 border rounded text-[10px] uppercase font-mono transition-all ${activeTool === 'depth' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
             >
               Depth
+            </button>
+            <button
+              onClick={() => setActiveTool('scale')}
+              className={`py-2 border rounded text-[10px] uppercase font-mono transition-all ${activeTool === 'scale' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+            >
+              Scale
             </button>
             <button
               onClick={() => {
@@ -670,7 +724,7 @@ export function ControlSidebar({
 
           {activeTool === 'depth' && (
             <div className="space-y-3 border-t border-tech-border/30 pt-3">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   onClick={() => setDepthAction('push')}
                   className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${depthAction === 'push' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
@@ -682,6 +736,12 @@ export function ControlSidebar({
                   className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${depthAction === 'pull' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
                 >
                   Depth In
+                </button>
+                <button
+                  onClick={() => setDepthAction('soften')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${depthAction === 'soften' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Soften
                 </button>
               </div>
 
@@ -750,6 +810,94 @@ export function ControlSidebar({
             </div>
           )}
 
+          {activeTool === 'scale' && (
+            <div className="space-y-3 border-t border-tech-border/30 pt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setScaleAction('grow')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${scaleAction === 'grow' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Grow
+                </button>
+                <button
+                  onClick={() => setScaleAction('shrink')}
+                  className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${scaleAction === 'shrink' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                >
+                  Shrink
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                <input
+                  type="range" min="1" max="500" step="1"
+                  value={brushSettings.size}
+                  onChange={(e) => setBrushSettings({ ...brushSettings, size: parseInt(e.target.value) })}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Strength</span><span>{brushStrengthPercent}%</span></div>
+                <input
+                  type="range" min="1" max="100" step="1"
+                  value={brushStrengthPercent}
+                  onChange={(e) => setBrushStrengthPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Scale Amount</span><span>{scaleBrushAmountPercent}%</span></div>
+                <input
+                  type="range" min="1" max="100" step="1"
+                  value={scaleBrushAmountPercent}
+                  onChange={(e) => setScaleBrushAmountPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Softness</span><span>{brushSoftnessPercent}%</span></div>
+                <input
+                  type="range" min="0" max="100" step="1"
+                  value={brushSoftnessPercent}
+                  onChange={(e) => setBrushSoftnessPercent(parseInt(e.target.value))}
+                  className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 border-t border-tech-border/30 pt-3">
+                <label className="space-y-1">
+                  <div className="mono-value text-[9px] opacity-50 font-mono uppercase">Min Size</div>
+                  <input
+                    type="number"
+                    min="0.05"
+                    max="25"
+                    step="0.05"
+                    value={scalePointSizeMin}
+                    onChange={(e) => setScalePointSizeMin(parseFloat(e.target.value || '0.05'))}
+                    className="w-full bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="mono-value text-[9px] opacity-50 font-mono uppercase">Max Size</div>
+                  <input
+                    type="number"
+                    min="0.05"
+                    max="25"
+                    step="0.05"
+                    value={scalePointSizeMax}
+                    onChange={(e) => setScalePointSizeMax(parseFloat(e.target.value || '0.05'))}
+                    className="w-full bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
+                  />
+                </label>
+              </div>
+
+              <div className="text-[8px] opacity-40 font-mono italic">Brush scaling changes each point&apos;s stored size and clamps it into the range above.</div>
+            </div>
+          )}
+
           {activeTool === 'add' && (
             <div className="space-y-3 border-t border-tech-border/30 pt-3">
               <div className="grid grid-cols-2 gap-2">
@@ -802,9 +950,9 @@ export function ControlSidebar({
                       onClick={() => setIsPickingCloneSource(!isPickingCloneSource)}
                       className={`w-full py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${isPickingCloneSource ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-70 hover:border-tech-accent/60'}`}
                     >
-                      {isPickingCloneSource ? 'Click Viewport To Pick' : 'Pick Source Point'}
+                      {isPickingCloneSource ? 'Click Viewport To Pick' : 'Pick Source Point (P)'}
                     </button>
-                    <div className="text-[8px] opacity-40 font-mono italic">Lock one visible point as the style source, then stamp or paint new points with its size and color.</div>
+                    <div className="text-[8px] opacity-40 font-mono italic">Lock one visible point as the style source, then stamp or paint new points with its size and color. Press P to toggle picking.</div>
                   </div>
                 )}
               </div>
@@ -822,6 +970,26 @@ export function ControlSidebar({
                   </div>
 
                   <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Point Gap</span><span>{addStrokeGap}px</span></div>
+                    <input
+                      type="range" min="2" max="160" step="1"
+                      value={addStrokeGap}
+                      onChange={(e) => setAddStrokeGap(parseInt(e.target.value))}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Stroke Assist</span><span>{addStrokeAssistPercent}%</span></div>
+                    <input
+                      type="range" min="0" max="95" step="1"
+                      value={addStrokeAssistPercent}
+                      onChange={(e) => setAddStrokeAssistPercent(parseInt(e.target.value))}
+                      className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
                     <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Paint Density</span><span>{brushStrengthPercent}%</span></div>
                     <input
                       type="range" min="1" max="100" step="1"
@@ -830,6 +998,18 @@ export function ControlSidebar({
                       className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
                     />
                   </div>
+
+                  <div className="text-[8px] opacity-40 font-mono italic">Paint Points now places rows along the stroke path. Point Gap controls spacing between points, and Stroke Assist smooths the cursor into a steadier calligraphic line.</div>
+
+                  <label className="flex items-center justify-between gap-3 rounded border border-tech-border/30 px-2 py-2 cursor-pointer">
+                    <span className="mono-value text-[9px] opacity-50 font-mono uppercase">Align To Edge</span>
+                    <input
+                      type="checkbox"
+                      checked={addAlignToEdge}
+                      onChange={(e) => setAddAlignToEdge(e.target.checked)}
+                      className="accent-tech-accent"
+                    />
+                  </label>
                 </>
               )}
 
