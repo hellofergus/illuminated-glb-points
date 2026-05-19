@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GLB Point Cloud Merger</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: #0d0d0f;
+      color: #e2e2e6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 16px;
+      gap: 32px;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #666;
+      text-align: center;
+      margin-top: 4px;
+    }
+
+    .drop-row {
+      display: flex;
+      gap: 16px;
+      width: 100%;
+      max-width: 680px;
+    }
+
+    .drop-zone {
+      flex: 1;
+      border: 1.5px dashed #333;
+      border-radius: 10px;
+      padding: 28px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      background: #111113;
+      position: relative;
+      min-height: 140px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .drop-zone.over { border-color: #6b6ef9; background: #16161f; }
+    .drop-zone.loaded { border-color: #4caf50; }
+
+    .drop-zone .label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #555;
+    }
+    .drop-zone .filename {
+      font-size: 12px;
+      color: #4caf50;
+      word-break: break-all;
+      padding: 0 8px;
+    }
+    .drop-zone .count {
+      font-size: 11px;
+      color: #888;
+    }
+    .drop-zone .prompt {
+      font-size: 13px;
+      color: #444;
+    }
+
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .plus {
+      font-size: 28px;
+      color: #333;
+      align-self: center;
+      margin-top: 40px;
+    }
+
+    .merge-btn {
+      background: #6b6ef9;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 14px 36px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .merge-btn:hover { background: #5759d6; }
+    .merge-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .log {
+      width: 100%;
+      max-width: 680px;
+      background: #111113;
+      border: 1px solid #222;
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 12px;
+      color: #999;
+      min-height: 56px;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+    .log .ok   { color: #4caf50; }
+    .log .err  { color: #f44336; }
+    .log .info { color: #90caf9; }
+  </style>
+</head>
+<body>
+
+<div>
+  <h1>GLB Point Cloud Merger</h1>
+  <p class="subtitle">Merges two exported point cloud GLBs — all attributes preserved</p>
+</div>
+
+<div class="drop-row">
+  <div class="drop-zone" id="zone-a" ondragover="onOver(event,'a')" ondragleave="onLeave('a')" ondrop="onDrop(event,'a')">
+    <div class="label">File A</div>
+    <div class="prompt" id="prompt-a">Drop GLB or click</div>
+    <div class="filename" id="name-a" style="display:none"></div>
+    <div class="count"   id="count-a"></div>
+    <input type="file" accept=".glb,.gltf" onchange="onPick(event,'a')" />
+  </div>
+
+  <div class="plus">+</div>
+
+  <div class="drop-zone" id="zone-b" ondragover="onOver(event,'b')" ondragleave="onLeave('b')" ondrop="onDrop(event,'b')">
+    <div class="label">File B</div>
+    <div class="prompt" id="prompt-b">Drop GLB or click</div>
+    <div class="filename" id="name-b" style="display:none"></div>
+    <div class="count"   id="count-b"></div>
+    <input type="file" accept=".glb,.gltf" onchange="onPick(event,'b')" />
+  </div>
+</div>
+
+<button class="merge-btn" id="merge-btn" disabled onclick="merge()">Merge &amp; Download</button>
+
+<div class="log" id="log">Waiting for two GLB files…</div>
+
+<script type="module">
+// ── Three.js from CDN (matches app version 0.184) ───────────────────────────
+import * as THREE from 'https://esm.sh/three@0.184.0';
+import { GLTFLoader }   from 'https://esm.sh/three@0.184.0/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'https://esm.sh/three@0.184.0/examples/jsm/exporters/GLTFExporter.js';
+
+// ── State ────────────────────────────────────────────────────────────────────
+const state = { a: null, b: null }; // { file, points, quadGeom }
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+const logEl = document.getElementById('log');
+function log(msg, cls = '') {
+  const line = cls ? `<span class="${cls}">${msg}</span>\n` : msg + '\n';
+  logEl.innerHTML += line;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function clearLog() { logEl.innerHTML = ''; }
+
+// ── Parse a GLB ArrayBuffer → { points[], quadGeom? } ────────────────────────
+function parseGLB(buffer) {
+  return new Promise((resolve, reject) => {
+    const loader = new GLTFLoader();
+    loader.parse(buffer, '', (gltf) => {
+      const points = [];
+      let quadGeom = null;
+
+      gltf.scene.traverse((child) => {
+        if (child.isPoints) {
+          const g = child.geometry;
+          const pos   = g.attributes.position?.array;
+          const col   = g.attributes.color?.array;
+          const uv    = g.attributes.uv?.array;
+          const depth = g.attributes._depth?.array;
+          const zOff  = g.attributes._zOffset?.array;
+          const size  = (g.attributes._size || g.attributes.size)?.array;
+          const n     = pos ? pos.length / 3 : 0;
+
+          for (let i = 0; i < n; i++) {
+            points.push({
+              x: pos[i*3],     y: pos[i*3+1],   z: pos[i*3+2],
+              r: col ? col[i*3]   : 1,
+              g: col ? col[i*3+1] : 1,
+              b: col ? col[i*3+2] : 1,
+              u: uv ? uv[i*2]     : 0,
+              v: uv ? uv[i*2+1]   : 0,
+              depthSample: depth ? depth[i] : 0.5,
+              zOffset:     zOff  ? zOff[i]  : 0,
+              size:        size  ? size[i]  : 1,
+            });
+          }
+        }
+
+        // Keep the reference ImageQuad geometry (from first file that has it)
+        if (!quadGeom && child.isMesh && child.name === 'ImageQuad') {
+          quadGeom = child.geometry.clone();
+        }
+      });
+
+      resolve({ points, quadGeom });
+    }, reject);
+  });
+}
+
+// ── Build merged GLB blob ─────────────────────────────────────────────────────
+function buildGLB(pts, quadGeom) {
+  return new Promise((resolve, reject) => {
+    const n = pts.length;
+    const positions    = new Float32Array(n * 3);
+    const colors       = new Float32Array(n * 3);
+    const uvs          = new Float32Array(n * 2);
+    const depthSamples = new Float32Array(n);
+    const zOffsets     = new Float32Array(n);
+    const sizes        = new Float32Array(n);
+
+    pts.forEach((p, i) => {
+      positions[i*3]   = p.x; positions[i*3+1] = p.y; positions[i*3+2] = p.z;
+      colors[i*3]      = p.r; colors[i*3+1]    = p.g; colors[i*3+2]    = p.b;
+      uvs[i*2]         = p.u; uvs[i*2+1]       = p.v;
+      depthSamples[i]  = p.depthSample;
+      zOffsets[i]      = p.zOffset;
+      sizes[i]         = p.size;
+    });
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+    geom.setAttribute('uv',       new THREE.BufferAttribute(uvs, 2));
+    geom.setAttribute('_depth',   new THREE.BufferAttribute(depthSamples, 1));
+    geom.setAttribute('_zOffset', new THREE.BufferAttribute(zOffsets, 1));
+    geom.setAttribute('_size',    new THREE.BufferAttribute(sizes, 1));
+
+    const mat = new THREE.PointsMaterial({ size: 0.1, vertexColors: true, sizeAttenuation: true });
+    const cloud = new THREE.Points(geom, mat);
+    cloud.name = 'PointCloud';
+
+    const root = new THREE.Group();
+    root.name = 'PointCloudExport';
+
+    // Attach reference quad if available
+    if (quadGeom) {
+      const quadMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, side: THREE.DoubleSide,
+        transparent: true, opacity: 0.18,
+      });
+      const quad = new THREE.Mesh(quadGeom, quadMat);
+      quad.name = 'ImageQuad';
+      root.add(quad);
+    }
+
+    root.add(cloud);
+
+    const exporter = new GLTFExporter();
+    exporter.parse(root,
+      (result) => {
+        const blob = result instanceof ArrayBuffer
+          ? new Blob([result], { type: 'model/gltf-binary' })
+          : new Blob([JSON.stringify(result)], { type: 'application/json' });
+        resolve(blob);
+      },
+      reject,
+      { binary: true }
+    );
+  });
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function updateButton() {
+  document.getElementById('merge-btn').disabled = !(state.a && state.b);
+}
+
+function showLoaded(slot, filename, count) {
+  document.getElementById(`zone-${slot}`).classList.add('loaded');
+  document.getElementById(`prompt-${slot}`).style.display = 'none';
+  const nameEl = document.getElementById(`name-${slot}`);
+  nameEl.textContent = filename;
+  nameEl.style.display = 'block';
+  document.getElementById(`count-${slot}`).textContent = `${count.toLocaleString()} points`;
+}
+
+async function loadFile(slot, file) {
+  log(`Loading ${slot.toUpperCase()}: ${file.name} …`);
+  const buffer = await file.arrayBuffer();
+  try {
+    const result = await parseGLB(buffer);
+    if (result.points.length === 0) {
+      log(`  ✗ No point cloud found in ${file.name}`, 'err');
+      return;
+    }
+    state[slot] = result;
+    showLoaded(slot, file.name, result.points.length);
+    log(`  ✓ ${result.points.length.toLocaleString()} points loaded`, 'ok');
+    updateButton();
+  } catch (e) {
+    log(`  ✗ Parse error: ${e}`, 'err');
+  }
+}
+
+// ── Merge & download ──────────────────────────────────────────────────────────
+window.merge = async function() {
+  if (!state.a || !state.b) return;
+  clearLog();
+
+  const merged  = [...state.a.points, ...state.b.points];
+  const quadGeom = state.a.quadGeom || state.b.quadGeom;
+
+  log(`Merging ${state.a.points.length.toLocaleString()} + ${state.b.points.length.toLocaleString()} = ${merged.length.toLocaleString()} points …`, 'info');
+
+  try {
+    const blob = await buildGLB(merged, quadGeom);
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'merged.glb';
+    a.click();
+    URL.revokeObjectURL(url);
+    log(`✓ Saved merged.glb  (${(blob.size / 1024).toFixed(1)} KB)`, 'ok');
+  } catch (e) {
+    log(`✗ Export error: ${e}`, 'err');
+  }
+};
+
+// ── Drag & drop / file pick handlers (exposed to HTML) ───────────────────────
+window.onOver  = (e, slot) => { e.preventDefault(); document.getElementById(`zone-${slot}`).classList.add('over'); };
+window.onLeave = (slot)    => { document.getElementById(`zone-${slot}`).classList.remove('over'); };
+window.onDrop  = (e, slot) => {
+  e.preventDefault();
+  document.getElementById(`zone-${slot}`).classList.remove('over');
+  const file = e.dataTransfer.files[0];
+  if (file) loadFile(slot, file);
+};
+window.onPick  = (e, slot) => {
+  const file = e.target.files[0];
+  if (file) loadFile(slot, file);
+};
+</script>
+</body>
+</html>

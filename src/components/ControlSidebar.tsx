@@ -1156,6 +1156,16 @@ export function ControlSidebar({
               className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
             />
           </div>
+          <div>
+            <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Extrusion Steps</span><span>{params.extrusionSteps}</span></div>
+            <input
+              type="range" min="0" max="8" step="1"
+              value={params.extrusionSteps}
+              onChange={(e) => setParams({ ...params, extrusionSteps: parseInt(e.target.value) })}
+              className="w-full accent-tech-accent h-1 bg-tech-border rounded-lg appearance-none cursor-pointer"
+            />
+            <div className="mono-value opacity-40 font-mono text-[10px] mt-1">Adds wall geometry at depth-cliff edges for painting on extruded sides</div>
+          </div>
           <div className="flex items-center justify-between">
             <span className="mono-value opacity-50 font-mono">Invert Depth</span>
             <button

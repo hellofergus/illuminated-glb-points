@@ -39,6 +39,7 @@ export interface SamplingParams {
   invertDepth: boolean;
   useSourceColors: boolean;
   whiteOnlyPoints: boolean;
+  extrusionSteps: number; // 0 = no wall geometry, 1-8 = subdivided walls at cliff edges
   aiPoints?: AIPoint[];
 }
 
@@ -1215,10 +1216,91 @@ export function buildProjectionMesh(
     }
   }
 
+  // ── Extrusion wall geometry ───────────────────────────────────────────────
+  // At each silhouette cliff edge (one vertex significantly higher than its
+  // neighbour), drop a subdivided VERTICAL wall panel straight down to z=0.
+  // This creates proper extrusion side-walls that the paint brush can hit.
+  const wallPos: number[] = [];
+  const wallUv: number[] = [];
+  const wallIdx: number[] = [];
+
+  if (params.extrusionSteps > 0) {
+    // Only trigger at true silhouette cliffs: neighbour Z drop > 35% of depth range.
+    const wallThreshold = params.depthScale * 0.35;
+    const steps = Math.max(1, Math.round(params.extrusionSteps));
+
+    const addWall = (
+      ax: number, ay: number, az: number, au: number, av: number,
+      bx: number, by: number, bz: number, bu: number, bv: number
+    ) => {
+      // Cliff condition: large relative Z drop between the two neighbours.
+      const zDiff = Math.abs(az - bz);
+      if (zDiff < wallThreshold) return;
+
+      // Wall always drops straight down to the ground plane (z=0), giving
+      // a proper vertical extrusion side-wall rather than an angled skirt.
+      const zHi = Math.max(az, bz);
+      const zLo = 0;
+
+      // (steps+1) rows × 2 verts per row = one strip per vertical slot.
+      const baseVert = vertCount + wallPos.length / 3;
+
+      for (let s = 0; s <= steps; s++) {
+        const z = zLo + (zHi - zLo) * (s / steps);
+        wallPos.push(ax, ay, z,  bx, by, z);
+        wallUv.push(au, av,      bu, bv);
+      }
+
+      for (let s = 0; s < steps; s++) {
+        const a0 = baseVert + s * 2;
+        const a1 = baseVert + s * 2 + 1;
+        const a2 = baseVert + s * 2 + 2;
+        const a3 = baseVert + s * 2 + 3;
+        wallIdx.push(a0, a2, a1,  a1, a2, a3);
+      }
+    };
+
+    // Horizontal edges: (row, col) → (row, col+1)
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols - 1; col++) {
+        const iA = row * cols + col;
+        const iB = row * cols + col + 1;
+        addWall(
+          positions[iA*3], positions[iA*3+1], positions[iA*3+2], uvs[iA*2], uvs[iA*2+1],
+          positions[iB*3], positions[iB*3+1], positions[iB*3+2], uvs[iB*2], uvs[iB*2+1]
+        );
+      }
+    }
+
+    // Vertical edges: (row, col) → (row+1, col)
+    for (let row = 0; row < rows - 1; row++) {
+      for (let col = 0; col < cols; col++) {
+        const iA = row * cols + col;
+        const iB = (row + 1) * cols + col;
+        addWall(
+          positions[iA*3], positions[iA*3+1], positions[iA*3+2], uvs[iA*2], uvs[iA*2+1],
+          positions[iB*3], positions[iB*3+1], positions[iB*3+2], uvs[iB*2], uvs[iB*2+1]
+        );
+      }
+    }
+  }
+
+  // Merge top-face + wall geometry
+  const mergedPos = new Float32Array(positions.length + wallPos.length);
+  mergedPos.set(positions);
+  mergedPos.set(wallPos, positions.length);
+
+  const mergedUv = new Float32Array(uvs.length + wallUv.length);
+  mergedUv.set(uvs);
+  mergedUv.set(wallUv, uvs.length);
+
+  const mergedIdx = [...indices, ...wallIdx];
+  // ─────────────────────────────────────────────────────────────────────────
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(mergedUv, 2));
+  geo.setIndex(mergedIdx);
 
   const mat = new THREE.MeshBasicMaterial({
     color: 0x00ccff,

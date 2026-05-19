@@ -479,7 +479,8 @@ export default function App() {
     edgeWeight: 1.0,
     invertDepth: false,
     useSourceColors: true,
-    whiteOnlyPoints: false
+    whiteOnlyPoints: false,
+    extrusionSteps: 0
   });
 
   const paramsRef = useRef(params);
@@ -2117,18 +2118,29 @@ export default function App() {
         };
 
         // ── 3D free-paint helpers ────────────────────────────────────────────────
+        // Returns whether a mesh intersection landed on a vertical wall face
+        // (wall normals are horizontal so |normal.z| is near 0).
+        const isWallFaceHit = (hit: THREE.Intersection): boolean => {
+          if (!hit.face) return false;
+          return Math.abs(hit.face.normal.z) < 0.25;
+        };
+
         // Resolves the 3-D stamp center for free-paint mode.
-        // Priority order:
-        //   1. Depth-map projection mesh hit (exact surface for top/front faces)
-        //   2. Raycast against the existing THREE.Points cloud (hits wall points exactly)
-        //   3. Screen-nearest visible point world position (last fallback)
-        const get3DPaintCenter = (screenX: number, screenY: number): THREE.Vector3 => {
+        // Returns the world position, whether a wall face was hit, and the world-space
+        // wall normal (needed for exact ray-plane scatter placement on the wall).
+        const get3DPaintCenter = (screenX: number, screenY: number): { point: THREE.Vector3; onWall: boolean; wallNormal: THREE.Vector3 | null } => {
           const nx = (screenX / pointer.width) * 2 - 1;
           const ny = -(screenY / pointer.height) * 2 + 1;
 
-          // 1. Projection mesh (top face / flat surfaces)
+          // 1. Projection mesh (top face or wall panels)
           const meshHit = getMeshHitFromScreen(screenX, screenY);
-          if (meshHit) return meshHit.point.clone();
+          if (meshHit) {
+            const wall = isWallFaceHit(meshHit);
+            const wallNormal = wall
+              ? meshHit.face!.normal.clone().transformDirection(meshHit.object.matrixWorld).normalize()
+              : null;
+            return { point: meshHit.point.clone(), onWall: wall, wallNormal };
+          }
 
           // 2. Raycast against existing point cloud — correctly hits extrusion walls
           if (sceneRef.current?.points) {
@@ -2143,7 +2155,12 @@ export default function App() {
             for (const ptHit of ptHits) {
               const idx = ptHit.index ?? -1;
               if (idx >= 0 && visibilityAttr.getX(idx) >= 0.5) {
-                return ptHit.point.clone();
+                const pt = ptHit.point.clone();
+                // Approximate wall normal: horizontal vector from hit toward camera.
+                const wallNormal = new THREE.Vector3(
+                  cam.position.x - pt.x, cam.position.y - pt.y, 0
+                ).normalize();
+                return { point: pt, onWall: true, wallNormal };
               }
             }
           }
@@ -2155,13 +2172,13 @@ export default function App() {
             const nearestRef = findNearestHit(visHits, screenX, screenY, Number.POSITIVE_INFINITY);
             if (nearestRef) {
               const localPt = new THREE.Vector3().fromBufferAttribute(pAttr, nearestRef.index);
-              return localPt.applyMatrix4(sceneRef.current.points.matrixWorld);
+              return { point: localPt.applyMatrix4(sceneRef.current.points.matrixWorld), onWall: false, wallNormal: null };
             }
           }
 
           // Last resort: fixed distance along view ray
           const dir = new THREE.Vector3(nx, ny, 0.5).unproject(cam).sub(cam.position).normalize();
-          return cam.position.clone().addScaledVector(dir, 200);
+          return { point: cam.position.clone().addScaledVector(dir, 200), onWall: false, wallNormal: null };
         };
 
         const appendPointAt3DWorld = (worldPos: THREE.Vector3): boolean => {
@@ -2216,41 +2233,85 @@ export default function App() {
         };
 
         // cursorX/Y are pixel coords of the actual mouse cursor (scatter is centered here).
-        // center3D is used ONLY to extract NDC-Z (surface depth layer) for unprojection.
-        const appendStrokeStamp3D = (cursorX: number, cursorY: number, center3D: THREE.Vector3) => {
+        // onWall=true: scatter is oriented along the wall's screen-projected axes and ONLY
+        // mesh-confirmed wall-face hits are placed — no points can escape outside mesh geometry.
+        const appendStrokeStamp3D = (cursorX: number, cursorY: number, center3D: THREE.Vector3, onWall: boolean, wallNormal: THREE.Vector3 | null) => {
           const brushScreenRadius = Math.max(1, settings.size);
           const brushWorldRadius = brushScreenRadius * currentParams.xyScale;
           const pointGap = clampAddStrokeGap(addStrokeGapRef.current) * currentParams.xyScale;
           const densityFactor = THREE.MathUtils.lerp(0.35, 1, settings.strength);
           const estimatedCount = Math.max(1, Math.round((Math.PI * brushWorldRadius * brushWorldRadius * densityFactor) / Math.max(pointGap * pointGap, 1)));
 
-          // Get the NDC-Z of the surface under the cursor, so scatter samples unproject
-          // onto that same depth plane (not floating in space).
+          // For wall painting: orient scatter along the wall's screen-space axes so samples
+          // concentrate on the actual wall strip rather than the surrounding air.
+          // Count is boosted so adequate points land even when the wall strip is narrow.
+          const totalCount = onWall ? estimatedCount * 8 : estimatedCount;
+
+          // Compute wall scatter axes in screen pixels: one axis runs along the wall
+          // (horizontal tangent in XY world-plane) and one runs up/down the wall (Z axis).
+          let wallAxisH = new THREE.Vector2(1, 0);
+          let wallAxisV = new THREE.Vector2(0, 1);
+          if (onWall && wallNormal) {
+            const testDist = Math.max(brushWorldRadius, 1);
+            // Horizontal tangent along the wall edge (perpendicular to normal in XY plane)
+            const tanH = new THREE.Vector3(-wallNormal.y, wallNormal.x, 0).normalize();
+            // Vertical tangent (up the wall)
+            const tanV = new THREE.Vector3(0, 0, 1);
+            const toPx = (ndc: THREE.Vector3) => ({
+              x: (ndc.x + 1) / 2 * pointer.width,
+              y: (1 - ndc.y) / 2 * pointer.height
+            });
+            const cPx = toPx(center3D.clone().project(cam));
+            const thPx = toPx(center3D.clone().add(tanH.clone().multiplyScalar(testDist)).project(cam));
+            const tvPx = toPx(center3D.clone().add(tanV.clone().multiplyScalar(testDist)).project(cam));
+            const h = new THREE.Vector2(thPx.x - cPx.x, thPx.y - cPx.y);
+            const v = new THREE.Vector2(tvPx.x - cPx.x, tvPx.y - cPx.y);
+            if (h.lengthSq() > 0.001) wallAxisH = h.normalize();
+            if (v.lengthSq() > 0.001) wallAxisV = v.normalize();
+          }
+
+          // NDC-Z fallback depth (top-face misses only, not used for wall mode).
           const centerNdcZ = center3D.clone().project(cam).z;
 
-          for (let si = 0; si < estimatedCount; si++) {
-            const angle = Math.random() * Math.PI * 2;
+          for (let si = 0; si < totalCount; si++) {
             const distFrac = Math.sqrt(Math.random()); // uniform disk 0..1
             const infl = getBrushInfluence(distFrac, settings.softness);
             if (infl <= 0) continue;
 
-            // Always scatter in screen-pixel space around the REAL cursor position.
-            const sx = cursorX + Math.cos(angle) * distFrac * brushScreenRadius;
-            const sy = cursorY + Math.sin(angle) * distFrac * brushScreenRadius;
+            let sx: number, sy: number;
 
-            // Try mesh surface first (covers the top face)
+            if (onWall) {
+              // Scatter in the 2-D OBB aligned to the wall's screen projection.
+              const hOff = (Math.random() * 2 - 1) * distFrac * brushScreenRadius;
+              const vOff = (Math.random() * 2 - 1) * distFrac * brushScreenRadius;
+              sx = cursorX + wallAxisH.x * hOff + wallAxisV.x * vOff;
+              sy = cursorY + wallAxisH.y * hOff + wallAxisV.y * vOff;
+
+              // Accept ONLY confirmed wall-face mesh hits.
+              // Triangle intersection is bounded by the actual wall geometry — no floating points.
+              const meshHit = getMeshHitFromScreen(sx, sy);
+              if (meshHit && isWallFaceHit(meshHit)) {
+                appendPointAt3DWorld(meshHit.point.clone());
+              }
+              // else: miss — skip entirely (better sparse than outside the mesh)
+              continue;
+            }
+
+            // Top-face mode: normal circle scatter, take mesh hit but skip wall faces.
+            const angle = Math.random() * Math.PI * 2;
+            sx = cursorX + Math.cos(angle) * distFrac * brushScreenRadius;
+            sy = cursorY + Math.sin(angle) * distFrac * brushScreenRadius;
+
             const meshHit = getMeshHitFromScreen(sx, sy);
-            if (meshHit) {
+            if (meshHit && !isWallFaceHit(meshHit)) {
               appendPointAt3DWorld(meshHit.point.clone());
               continue;
             }
 
-            // No mesh hit (wall / open area): unproject at center's NDC-Z so new points
-            // sit on the same surface plane as the hit center (wall, etc.).
+            // No top-face hit: NDC-Z unproject (surface-aligned via center depth).
             const sNx = (sx / pointer.width) * 2 - 1;
             const sNy = -(sy / pointer.height) * 2 + 1;
-            const scatterPos = new THREE.Vector3(sNx, sNy, centerNdcZ).unproject(cam);
-            appendPointAt3DWorld(scatterPos);
+            appendPointAt3DWorld(new THREE.Vector3(sNx, sNy, centerNdcZ).unproject(cam));
           }
         };
         // ────────────────────────────────────────────────────────────────────────
@@ -2262,7 +2323,7 @@ export default function App() {
             if (centerHit) appendPointFromHit(centerHit);
           } else {
             // Free stamp: place at exact cursor 3D position
-            const center3D = get3DPaintCenter(pointer.x, pointer.y);
+            const { point: center3D } = get3DPaintCenter(pointer.x, pointer.y);
             appendPointAt3DWorld(center3D);
           }
         } else {
@@ -2279,13 +2340,13 @@ export default function App() {
 
           if (!addAlignToEdgeRef.current) {
             // ── Free 3-D paint: cursor XY from mouse, depth from mesh or nearest point ──
-            const center3D = get3DPaintCenter(smoothedPointer.x, smoothedPointer.y);
+            const { point: center3D, onWall, wallNormal } = get3DPaintCenter(smoothedPointer.x, smoothedPointer.y);
 
             const pointGap = clampAddStrokeGap(addStrokeGapRef.current) * currentParams.xyScale;
             const lastEmitWorld = addStrokeLastEmitWorldRef.current;
 
             if (!lastEmitWorld) {
-              appendStrokeStamp3D(smoothedPointer.x, smoothedPointer.y, center3D);
+              appendStrokeStamp3D(smoothedPointer.x, smoothedPointer.y, center3D, onWall, wallNormal);
               addStrokeLastEmitPointerRef.current = { ...smoothedPointer };
               addStrokeLastEmitWorldRef.current = { x: center3D.x, y: center3D.y, z: center3D.z };
             } else {
@@ -2305,7 +2366,7 @@ export default function App() {
                   const t = traveled / worldDistance;
                   const interpSx = THREE.MathUtils.lerp(lastEmitPtr.x, smoothedPointer.x, t);
                   const interpSy = THREE.MathUtils.lerp(lastEmitPtr.y, smoothedPointer.y, t);
-                  appendStrokeStamp3D(interpSx, interpSy, samplePos);
+                  appendStrokeStamp3D(interpSx, interpSy, samplePos, onWall, wallNormal);
                   lastStampedPos.copy(samplePos);
                   traveled += pointGap;
                 }
@@ -3010,7 +3071,8 @@ export default function App() {
     params.depthScale,
     params.invertDepth,
     params.depthColorSpace,
-    params.xyScale
+    params.xyScale,
+    params.extrusionSteps
   ]);
 
   // Toggle projection mesh wireframe visibility for debugging
