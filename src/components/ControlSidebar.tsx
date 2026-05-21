@@ -1182,6 +1182,20 @@ export function ControlSidebar({
 
       <AccordionSection title="05 // Coordinate Transform">
         <div className="space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="mono-value opacity-50 font-mono whitespace-nowrap">XY Scale</span>
+            <input
+              type="number"
+              min="0.01"
+              step="0.1"
+              value={params.xyScale}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                if (!isNaN(v) && v > 0) setParams({ ...params, xyScale: v });
+              }}
+              className="w-20 bg-tech-bg border border-tech-border text-[10px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+            />
+          </div>
           <div>
             <div className="flex justify-between mono-value mb-1 font-mono"><span className="opacity-50">Depth Scale</span><span>{params.depthScale.toFixed(1)}</span></div>
             <input

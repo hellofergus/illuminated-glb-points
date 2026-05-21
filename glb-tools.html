@@ -897,7 +897,7 @@ function extractPoints(scene) {
 function extractQuad(scene) {
   let quad = null;
   scene.traverse(c => {
-    if (!quad && c.isMesh && c.name === 'ImageQuad') quad = c.geometry.clone();
+    if (!quad && c.isMesh && (c.name === 'control_quad' || c.name === 'ImageQuad')) quad = c.geometry.clone();
   });
   return quad;
 }
@@ -940,7 +940,7 @@ function buildMergedScene(pts, quadGeom) {
     const quad = new THREE.Mesh(quadGeom, new THREE.MeshBasicMaterial({
       color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.18
     }));
-    quad.name = 'ImageQuad';
+    quad.name = 'control_quad';
     root.add(quad);
   }
   root.add(cloud);

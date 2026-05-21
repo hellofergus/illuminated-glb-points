@@ -217,8 +217,8 @@ function parseGLB(buffer) {
           }
         }
 
-        // Keep the reference ImageQuad geometry (from first file that has it)
-        if (!quadGeom && child.isMesh && child.name === 'ImageQuad') {
+        // Keep the reference quad geometry (from first file that has it)
+        if (!quadGeom && child.isMesh && (child.name === 'control_quad' || child.name === 'ImageQuad')) {
           quadGeom = child.geometry.clone();
         }
       });
@@ -270,7 +270,7 @@ function buildGLB(pts, quadGeom) {
         transparent: true, opacity: 0.18,
       });
       const quad = new THREE.Mesh(quadGeom, quadMat);
-      quad.name = 'ImageQuad';
+      quad.name = 'control_quad';
       root.add(quad);
     }
 

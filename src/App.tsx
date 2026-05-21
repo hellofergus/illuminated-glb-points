@@ -203,6 +203,10 @@ export default function App() {
     pointCount: 0
   });
 
+  // GLB export settings
+  const [glbExportScale, setGlbExportScale] = useState<number>(1.0);
+  const [glbMaxParticleSize, setGlbMaxParticleSize] = useState<number | null>(null);
+
   // Visual State
   const [maxPointSize, setMaxPointSize] = useState<number>(100);
   const maxPointSizeRef = useRef(maxPointSize);
@@ -474,7 +478,7 @@ export default function App() {
     pointDensityFactor: 1,
     maxBlobSize: 400,
     depthScale: 50,
-    xyScale: 0.5,
+    xyScale: 1.0,
     edgeInclusion: true,
     edgeWeight: 1.0,
     invertDepth: false,
@@ -3524,10 +3528,20 @@ export default function App() {
         }
       }
 
-      const blob = await exportToGLB(exportedPoints, {
+      const scaledPoints = glbExportScale !== 1.0 || glbMaxParticleSize !== null
+        ? exportedPoints.map(p => ({
+            ...p,
+            x: p.x * glbExportScale,
+            y: p.y * glbExportScale,
+            z: p.z * glbExportScale,
+            size: glbMaxParticleSize !== null ? Math.min(p.size, glbMaxParticleSize) : p.size,
+          }))
+        : exportedPoints;
+
+      const blob = await exportToGLB(scaledPoints, {
         imageWidth: stats.width,
         imageHeight: stats.height,
-        xyScale: params.xyScale,
+        xyScale: params.xyScale * glbExportScale,
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -3539,6 +3553,21 @@ export default function App() {
       console.error(err);
       setStatus('Export failed');
     }
+  };
+
+  const handleExportDepthPNG = () => {
+    const canvas = paintedDepthCanvasRef.current;
+    if (!canvas) { setStatus('No depth map loaded'); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { setStatus('Export failed'); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'depth_map.png';
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus('Depth map exported');
+    }, 'image/png');
   };
 
   const handleExportJSON = () => {
@@ -3846,20 +3875,50 @@ export default function App() {
                  <div className="flex justify-between text-[10px] font-mono"><span className="text-tech-muted uppercase">TIME:</span><span>{isProcessing ? '--' : '1.4s'}</span></div>
                </div>
                <div className="flex flex-col gap-2 mt-4">
-                 <button 
-                  onClick={handleExportJSON}
-                  disabled={points.length === 0}
-                  className="w-full py-2 bg-tech-border border border-tech-subtle-border text-[9px] font-mono uppercase hover:border-tech-accent transition-all disabled:opacity-30"
-                 >
-                   Export JSON
-                 </button>
-                 <button 
-                  onClick={handleExportGLB}
-                  disabled={points.length === 0}
-                  className="w-full py-2 bg-tech-accent/10 border border-tech-accent text-tech-accent text-[9px] font-mono uppercase hover:bg-tech-accent hover:text-black transition-all font-bold disabled:opacity-30"
-                 >
-                   Export GLB Model
-                 </button>
+                 <div className="flex flex-col gap-1.5">
+                   <div className="flex items-center justify-between gap-2">
+                     <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">XY Scale</label>
+                     <input
+                       type="number"
+                       min="0.01"
+                       step="0.1"
+                       value={glbExportScale}
+                       onChange={e => setGlbExportScale(Math.max(0.01, parseFloat(e.target.value) || 0.01))}
+                       className="w-16 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+                     />
+                   </div>
+                   <div className="flex items-center justify-between gap-2">
+                     <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Max Particle</label>
+                     <input
+                       type="number"
+                       min="0.01"
+                       step="0.5"
+                       value={glbMaxParticleSize ?? ''}
+                       onChange={e => {
+                         const v = parseFloat(e.target.value);
+                         setGlbMaxParticleSize(e.target.value === '' || isNaN(v) || v <= 0 ? null : v);
+                       }}
+                       placeholder="no cap"
+                       className="w-16 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+                     />
+                   </div>
+                 </div>
+                 <div className="flex gap-1.5">
+                   <button 
+                    onClick={handleExportGLB}
+                    disabled={points.length === 0}
+                    className="flex-1 py-2 bg-tech-accent/10 border border-tech-accent text-tech-accent text-[9px] font-mono uppercase hover:bg-tech-accent hover:text-black transition-all font-bold disabled:opacity-30"
+                   >
+                     Export GLB
+                   </button>
+                   <button
+                    onClick={handleExportDepthPNG}
+                    disabled={!depthImg}
+                    className="flex-1 py-2 bg-tech-input-bg border border-tech-border text-tech-muted text-[9px] font-mono uppercase hover:border-tech-accent hover:text-tech-accent transition-all disabled:opacity-30"
+                   >
+                     Depth PNG
+                   </button>
+                 </div>
                </div>
             </div>
           </div>

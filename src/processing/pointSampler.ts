@@ -1109,7 +1109,7 @@ export async function exportToGLB(points: PointData[], options: GLBExportOptions
     opacity: 0.18,
   });
   const imageQuad = new THREE.Mesh(quadGeometry, quadMaterial);
-  imageQuad.name = 'ImageQuad';
+  imageQuad.name = 'control_quad';
 
   const exportRoot = new THREE.Group();
   exportRoot.name = 'PointCloudExport';
