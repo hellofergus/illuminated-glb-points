@@ -2568,14 +2568,13 @@ export default function App() {
             }
 
             const currentSize = sizeAttr.getX(i);
-            const scaleDelta = scaleBrushAmountRef.current * settings.strength * brushInfluence;
-            const nextSize = THREE.MathUtils.clamp(
-              settings.mode === 'grow'
-                ? currentSize * (1 + scaleDelta)
-                : currentSize * Math.max(0.05, 1 - scaleDelta),
-              scalePointSizeMinRef.current,
-              scalePointSizeMaxRef.current
-            );
+            const scaleDelta = scaleBrushAmountRef.current * settings.strength * brushInfluence * 0.06;
+            let nextSize: number;
+            if (settings.mode === 'grow') {
+              nextSize = Math.min(currentSize + scaleDelta, scalePointSizeMaxRef.current);
+            } else {
+              nextSize = Math.max(currentSize - scaleDelta, scalePointSizeMinRef.current);
+            }
 
             if (Math.abs(nextSize - currentSize) < 0.0005) {
               continue;
@@ -3291,12 +3290,14 @@ export default function App() {
   useKeyboardShortcuts({
     brushEnabled: brushSettings.enabled,
     cloneSourceShortcutEnabled: activeTool === 'add' && addAppearanceSource === 'clone-selected',
+    isScaleBrushActive: activeTool === 'scale',
     isEditableTarget,
     selectionModeEnabledRef,
     hideSelectedPoints,
     adjustBrushSize,
     adjustBrushStrengthPercent,
     setBrushSoftnessPercent,
+    toggleScaleAction: () => setScaleAction((prev) => prev === 'grow' ? 'shrink' : 'grow'),
     handleUndo,
     handleRedo,
     handleSaveSessionToFile,

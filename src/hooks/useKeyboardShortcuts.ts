@@ -4,12 +4,14 @@ import type { BrushMode } from '../processing/pointInteraction';
 type UseKeyboardShortcutsArgs = {
   brushEnabled: boolean;
   cloneSourceShortcutEnabled: boolean;
+  isScaleBrushActive: boolean;
   isEditableTarget: (target: EventTarget | null) => boolean;
   selectionModeEnabledRef: { current: boolean };
   hideSelectedPoints: () => void;
   adjustBrushSize: (delta: number) => void;
   adjustBrushStrengthPercent: (delta: number) => void;
   setBrushSoftnessPercent: (percent: number) => void;
+  toggleScaleAction: () => void;
   handleUndo: () => void;
   handleRedo: () => void;
   handleSaveSessionToFile: () => void | Promise<void>;
@@ -19,12 +21,14 @@ type UseKeyboardShortcutsArgs = {
 export const useKeyboardShortcuts = ({
   brushEnabled,
   cloneSourceShortcutEnabled,
+  isScaleBrushActive,
   isEditableTarget,
   selectionModeEnabledRef,
   hideSelectedPoints,
   adjustBrushSize,
   adjustBrushStrengthPercent,
   setBrushSoftnessPercent,
+  toggleScaleAction,
   handleUndo,
   handleRedo,
   handleSaveSessionToFile,
@@ -94,6 +98,12 @@ export const useKeyboardShortcuts = ({
         return;
       }
 
+      if (!event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'i' && isScaleBrushActive) {
+        event.preventDefault();
+        toggleScaleAction();
+        return;
+      }
+
       if (!event.ctrlKey && /^[0-9]$/.test(event.key)) {
         event.preventDefault();
         setBrushSoftnessPercent(event.key === '0' ? 100 : Number(event.key) * 10);
@@ -114,8 +124,10 @@ export const useKeyboardShortcuts = ({
     handleUndo,
     hideSelectedPoints,
     isEditableTarget,
+    isScaleBrushActive,
     selectionModeEnabledRef,
     setBrushSoftnessPercent,
-    toggleCloneSourcePicking
+    toggleCloneSourcePicking,
+    toggleScaleAction
   ]);
 };

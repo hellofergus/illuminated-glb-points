@@ -564,7 +564,15 @@ export function ControlSidebar({
                   </div>
 
                   <div>
-                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                    <div className="flex items-center justify-between mono-value mb-1 font-mono text-[9px]">
+                      <span className="opacity-50">Brush Radius</span>
+                      <input
+                        type="number" min="1" max="500" step="1"
+                        value={brushSettings.size}
+                        onChange={(e) => setBrushSettings({ ...brushSettings, size: Math.min(500, Math.max(1, parseInt(e.target.value) || 1)) })}
+                        className="w-14 bg-transparent border border-tech-border/50 rounded px-1 py-0.5 text-[9px] font-mono text-tech-text text-right focus:border-tech-accent outline-none"
+                      />
+                    </div>
                     <input
                       type="range" min="1" max="500" step="1"
                       value={brushSettings.size}
@@ -746,7 +754,15 @@ export function ControlSidebar({
               </div>
 
               <div>
-                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                <div className="flex items-center justify-between mono-value mb-1 font-mono text-[9px]">
+                  <span className="opacity-50">Brush Radius</span>
+                  <input
+                    type="number" min="1" max="500" step="1"
+                    value={brushSettings.size}
+                    onChange={(e) => setBrushSettings({ ...brushSettings, size: Math.min(500, Math.max(1, parseInt(e.target.value) || 1)) })}
+                    className="w-14 bg-transparent border border-tech-border/50 rounded px-1 py-0.5 text-[9px] font-mono text-tech-text text-right focus:border-tech-accent outline-none"
+                  />
+                </div>
                 <input
                   type="range" min="1" max="500" step="1"
                   value={brushSettings.size}
@@ -828,7 +844,15 @@ export function ControlSidebar({
               </div>
 
               <div>
-                <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                <div className="flex items-center justify-between mono-value mb-1 font-mono text-[9px]">
+                  <span className="opacity-50">Brush Radius</span>
+                  <input
+                    type="number" min="1" max="500" step="1"
+                    value={brushSettings.size}
+                    onChange={(e) => setBrushSettings({ ...brushSettings, size: Math.min(500, Math.max(1, parseInt(e.target.value) || 1)) })}
+                    className="w-14 bg-transparent border border-tech-border/50 rounded px-1 py-0.5 text-[9px] font-mono text-tech-text text-right focus:border-tech-accent outline-none"
+                  />
+                </div>
                 <input
                   type="range" min="1" max="500" step="1"
                   value={brushSettings.size}
@@ -867,34 +891,37 @@ export function ControlSidebar({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2 border-t border-tech-border/30 pt-3">
-                <label className="space-y-1">
-                  <div className="mono-value text-[9px] opacity-50 font-mono uppercase">Min Size</div>
-                  <input
-                    type="number"
-                    min="0.05"
-                    max="25"
-                    step="0.05"
-                    value={scalePointSizeMin}
-                    onChange={(e) => setScalePointSizeMin(parseFloat(e.target.value || '0.05'))}
-                    className="w-full bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <div className="mono-value text-[9px] opacity-50 font-mono uppercase">Max Size</div>
-                  <input
-                    type="number"
-                    min="0.05"
-                    max="25"
-                    step="0.05"
-                    value={scalePointSizeMax}
-                    onChange={(e) => setScalePointSizeMax(parseFloat(e.target.value || '0.05'))}
-                    className="w-full bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
-                  />
-                </label>
+              <div className="border-t border-tech-border/30 pt-3">
+                {scaleAction === 'grow' ? (
+                  <label className="space-y-1">
+                    <div className="mono-value text-[9px] opacity-50 font-mono uppercase">Max Size</div>
+                    <input
+                      type="number"
+                      min="0.05"
+                      max="25"
+                      step="0.05"
+                      value={scalePointSizeMax}
+                      onChange={(e) => setScalePointSizeMax(parseFloat(e.target.value || '0.05'))}
+                      className="w-full bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
+                    />
+                  </label>
+                ) : (
+                  <label className="space-y-1">
+                    <div className="mono-value text-[9px] opacity-50 font-mono uppercase">Min Size</div>
+                    <input
+                      type="number"
+                      min="0.05"
+                      max="25"
+                      step="0.05"
+                      value={scalePointSizeMin}
+                      onChange={(e) => setScalePointSizeMin(parseFloat(e.target.value || '0.05'))}
+                      className="w-full bg-transparent border border-tech-border/50 rounded px-2 py-2 text-[10px] font-mono text-tech-text focus:border-tech-accent outline-none"
+                    />
+                  </label>
+                )}
               </div>
 
-              <div className="text-[8px] opacity-40 font-mono italic">Brush scaling changes each point&apos;s stored size and clamps it into the range above.</div>
+              <div className="text-[8px] opacity-40 font-mono italic">{scaleAction === 'grow' ? 'Grow brush increases point size up to Max Size.' : 'Shrink brush decreases point size down to Min Size.'}</div>
             </div>
           )}
 
@@ -960,7 +987,15 @@ export function ControlSidebar({
               {toolInteractionMode === 'brush' && (
                 <>
                   <div>
-                    <div className="flex justify-between mono-value mb-1 font-mono text-[9px]"><span className="opacity-50">Brush Radius</span><span>{brushSettings.size}PX</span></div>
+                    <div className="flex items-center justify-between mono-value mb-1 font-mono text-[9px]">
+                      <span className="opacity-50">Brush Radius</span>
+                      <input
+                        type="number" min="1" max="500" step="1"
+                        value={brushSettings.size}
+                        onChange={(e) => setBrushSettings({ ...brushSettings, size: Math.min(500, Math.max(1, parseInt(e.target.value) || 1)) })}
+                        className="w-14 bg-transparent border border-tech-border/50 rounded px-1 py-0.5 text-[9px] font-mono text-tech-text text-right focus:border-tech-accent outline-none"
+                      />
+                    </div>
                     <input
                       type="range" min="1" max="500" step="1"
                       value={brushSettings.size}

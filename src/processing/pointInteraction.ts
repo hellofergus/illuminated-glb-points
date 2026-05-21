@@ -70,7 +70,10 @@ export const getBrushInfluence = (
 
   if (coverage === 0 && softness > 0) {
     const featherProgress = (normalizedDistance - featherStart) / softness;
-    coverage = 1 - Math.min(Math.max(featherProgress, 0), 1);
+    const t = Math.min(Math.max(featherProgress, 0), 1);
+    // Smoothstep cubic: eases in/out vs abrupt linear, giving a perceptibly gradual ramp.
+    const smoothed = t * t * (3 - 2 * t);
+    coverage = 1 - smoothed;
   }
 
   return coverage;

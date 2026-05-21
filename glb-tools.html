@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GLB Tools</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0c0c0e;
+      --surface: #111114;
+      --border: #222226;
+      --border2: #2a2a30;
+      --text: #d8d8de;
+      --muted: #555560;
+      --accent: #6b6ef9;
+      --accent-h: #5759d6;
+      --ok: #4caf50;
+      --err: #f44336;
+      --info: #90caf9;
+      --warn: #ffb74d;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 28px 20px 48px;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    header h1 {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+    header p {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* ── Tab strip ── */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 8px 18px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      transition: color 0.12s, border-color 0.12s;
+      margin-bottom: -1px;
+      user-select: none;
+    }
+    .tab.active { color: #fff; border-bottom-color: var(--accent); }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .card + .card { margin-top: 16px; }
+    .card-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    /* ── Drop zones ── */
+    .drop-row { display: flex; gap: 16px; }
+    .drop-zone {
+      flex: 1;
+      border: 1.5px dashed var(--border2);
+      border-radius: 9px;
+      padding: 22px 12px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.12s, background 0.12s;
+      background: var(--bg);
+      position: relative;
+      min-height: 110px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .drop-zone.over   { border-color: var(--accent); background: #13131f; }
+    .drop-zone.loaded { border-color: var(--ok); }
+    .drop-zone .dz-label  { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+    .drop-zone .dz-prompt { font-size: 12px; color: #3a3a44; }
+    .drop-zone .dz-file   { font-size: 11px; color: var(--ok); word-break: break-all; padding: 0 6px; }
+    .drop-zone .dz-meta   { font-size: 10px; color: var(--muted); }
+    .drop-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .plus { font-size: 24px; color: #2a2a30; align-self: center; padding-top: 14px; }
+
+    /* ── Buttons ── */
+    .btn {
+      border: none; border-radius: 7px; cursor: pointer;
+      font-size: 12px; font-weight: 600; letter-spacing: 0.05em;
+      transition: background 0.12s, opacity 0.12s;
+    }
+    .btn-primary  { background: var(--accent);  color: #fff; padding: 11px 28px; }
+    .btn-primary:hover { background: var(--accent-h); }
+    .btn-ghost    { background: transparent; color: var(--muted); border: 1px solid var(--border2); padding: 6px 14px; }
+    .btn-ghost:hover { color: var(--text); border-color: #444; }
+    .btn-ok       { background: #1e3d20; color: var(--ok); border: 1px solid #2e5430; padding: 6px 14px; }
+    .btn-ok:hover { background: #264d28; }
+    .btn:disabled { opacity: 0.32; cursor: not-allowed; }
+
+    .action-row { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
+
+    /* ── Scene tree ── */
+    .tree-wrap {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 8px;
+      overflow: auto;
+      max-height: 500px;
+    }
+    .tree-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 4px;
+      border-radius: 5px;
+      cursor: default;
+    }
+    .tree-node:hover { background: #16161c; }
+    .tree-indent { display: inline-block; width: 16px; flex-shrink: 0; }
+    .tree-icon { font-size: 11px; flex-shrink: 0; width: 16px; text-align: center; }
+    .tree-name {
+      font-size: 12px;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      color: var(--text);
+      cursor: pointer;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-radius: 3px;
+      padding: 1px 4px;
+    }
+    .tree-name:hover { background: #222230; }
+    .tree-name.editing {
+      background: #1a1a2e;
+      outline: 1px solid var(--accent);
+      cursor: text;
+    }
+    .tree-type { font-size: 10px; color: var(--muted); flex-shrink: 0; font-family: monospace; }
+    .tree-badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+      padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
+    }
+    .badge-points  { background: #1a2a3a; color: #90caf9; }
+    .badge-mesh    { background: #1e2e1e; color: #a5d6a7; }
+    .badge-group   { background: #2a2a1e; color: #ffe082; }
+    .badge-scene   { background: #2a1e2a; color: #ce93d8; }
+    .tree-pts-count { font-size: 10px; color: #444; font-family: monospace; }
+
+    /* ── Attrs table ── */
+    .attr-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: monospace; }
+    .attr-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+    .attr-table td { padding: 4px 8px; border-bottom: 1px solid #18181c; vertical-align: top; }
+    .attr-table tr:last-child td { border-bottom: none; }
+    .attr-name { color: #90caf9; }
+    .attr-val  { color: var(--text); }
+    .attr-type { color: var(--muted); }
+    .attr-name-edit { cursor: pointer; border-radius: 3px; padding: 1px 3px; display: inline-block; }
+    .attr-name-edit:hover { background: #1a2a3e; }
+    .attr-name-edit.editing { background: #1a1a2e; outline: 1px solid var(--accent); cursor: text; }
+    .btn-del-attr {
+      background: none; border: none; color: #3a3a44; cursor: pointer;
+      font-size: 15px; line-height: 1; padding: 0 3px; border-radius: 3px;
+      transition: color 0.1s;
+    }
+    .btn-del-attr:hover { color: var(--err); }
+    .add-attr-row {
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+      padding: 10px 0 2px;
+      border-top: 1px solid var(--border);
+      margin-top: 8px;
+    }
+    .attr-input {
+      background: var(--bg); border: 1px solid var(--border2); border-radius: 5px;
+      color: var(--text); font-size: 11px; padding: 5px 8px;
+      font-family: monospace; flex: 1; min-width: 90px; outline: none;
+    }
+    .attr-input:focus { border-color: var(--accent); }
+    .attr-input-sm {
+      background: var(--bg); border: 1px solid var(--border2); border-radius: 5px;
+      color: var(--text); font-size: 11px; padding: 5px 6px;
+      font-family: monospace; width: 58px; outline: none;
+    }
+    .attr-input-sm:focus { border-color: var(--accent); }
+    .attr-select {
+      background: var(--bg); border: 1px solid var(--border2); border-radius: 5px;
+      color: var(--text); font-size: 11px; padding: 5px 6px; outline: none; cursor: pointer;
+    }
+    .attr-select:focus { border-color: var(--accent); }
+
+    /* ── Log ── */
+    .log {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px 14px; font-size: 11px; color: var(--muted); min-height: 44px;
+      max-height: 160px; overflow-y: auto; line-height: 1.9; white-space: pre-wrap;
+      font-family: monospace; margin-top: 16px;
+    }
+    .log .ok   { color: var(--ok); }
+    .log .err  { color: var(--err); }
+    .log .info { color: var(--info); }
+    .log .warn { color: var(--warn); }
+
+    /* ── Inspector layout ── */
+    .inspector-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 760px) { .inspector-layout { grid-template-columns: 1fr; } .drop-row { flex-direction: column; } }
+
+    /* ── Merge panel ── */
+    .merge-layout { max-width: 760px; }
+
+    .section-label {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 10px;
+    }
+
+    .info-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #17171d; border: 1px solid var(--border2);
+      border-radius: 5px; padding: 4px 10px; font-size: 11px; color: var(--muted);
+    }
+    .info-chip b { color: var(--text); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>GLB Tools</h1>
+  <p>Inspector · Rename · Merge · Export</p>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('inspector')">Inspector</div>
+  <div class="tab" onclick="switchTab('merge')">Merge</div>
+</div>
+
+<!-- ══════════════════ INSPECTOR PANEL ══════════════════ -->
+<div class="panel active" id="panel-inspector">
+  <div class="inspector-layout">
+
+    <!-- Left: drop + tree -->
+    <div>
+      <div class="card">
+        <div class="card-title">Load GLB</div>
+        <div class="drop-zone" id="insp-zone"
+             ondragover="dzOver(event,'insp')" ondragleave="dzLeave('insp')" ondrop="dzDrop(event,'insp')">
+          <div class="dz-label">GLB File</div>
+          <div class="dz-prompt" id="insp-prompt">Drop a GLB here or click</div>
+          <div class="dz-file"   id="insp-file"   style="display:none"></div>
+          <div class="dz-meta"   id="insp-meta"></div>
+          <input type="file" accept=".glb,.gltf" onchange="dzPick(event,'insp')" />
+        </div>
+      </div>
+
+      <div class="card" id="insp-tree-card" style="display:none; margin-top:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div class="card-title" style="margin:0">Scene Hierarchy</div>
+          <div style="font-size:10px;color:var(--muted)">Click a name to rename</div>
+        </div>
+        <div class="tree-wrap" id="insp-tree"></div>
+
+        <div class="action-row">
+          <button class="btn btn-ok" id="insp-save-btn" onclick="inspSave()" disabled>
+            Save Renamed GLB
+          </button>
+          <button class="btn btn-ghost" onclick="inspReset()">Clear</button>
+          <span class="info-chip" id="insp-rename-count" style="display:none">
+            <b id="insp-rename-n">0</b> rename(s) pending
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: attributes panel -->
+    <div>
+      <div class="card" id="insp-attr-card" style="display:none;">
+        <div class="card-title" id="insp-attr-title">Node Attributes</div>
+        <div id="insp-attr-body"></div>
+      </div>
+    </div>
+
+  </div>
+  <div class="log" id="insp-log">Load a GLB to inspect…</div>
+</div>
+
+<!-- ══════════════════ MERGE PANEL ══════════════════ -->
+<div class="panel" id="panel-merge">
+  <div class="merge-layout">
+    <div class="card">
+      <div class="card-title">Source Files</div>
+      <div class="drop-row">
+        <div class="drop-zone" id="mg-a-zone"
+             ondragover="dzOver(event,'mg-a')" ondragleave="dzLeave('mg-a')" ondrop="dzDrop(event,'mg-a')">
+          <div class="dz-label">File A</div>
+          <div class="dz-prompt" id="mg-a-prompt">Drop GLB or click</div>
+          <div class="dz-file"   id="mg-a-file"   style="display:none"></div>
+          <div class="dz-meta"   id="mg-a-meta"></div>
+          <input type="file" accept=".glb,.gltf" onchange="dzPick(event,'mg-a')" />
+        </div>
+
+        <div class="plus">+</div>
+
+        <div class="drop-zone" id="mg-b-zone"
+             ondragover="dzOver(event,'mg-b')" ondragleave="dzLeave('mg-b')" ondrop="dzDrop(event,'mg-b')">
+          <div class="dz-label">File B</div>
+          <div class="dz-prompt" id="mg-b-prompt">Drop GLB or click</div>
+          <div class="dz-file"   id="mg-b-file"   style="display:none"></div>
+          <div class="dz-meta"   id="mg-b-meta"></div>
+          <input type="file" accept=".glb,.gltf" onchange="dzPick(event,'mg-b')" />
+        </div>
+      </div>
+
+      <div class="action-row">
+        <button class="btn btn-primary" id="mg-btn" disabled onclick="mergeAndDownload()">
+          Export GLB
+        </button>
+      </div>
+    </div>
+
+    <div class="log" id="mg-log">Load two GLBs to merge…</div>
+  </div>
+</div>
+
+
+<script type="module">
+import * as THREE from 'https://esm.sh/three@0.184.0';
+import { GLTFLoader }   from 'https://esm.sh/three@0.184.0/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'https://esm.sh/three@0.184.0/examples/jsm/exporters/GLTFExporter.js';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tab switching
+// ═══════════════════════════════════════════════════════════════════════════
+window.switchTab = (name) => {
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.textContent.toLowerCase() === name)
+  );
+  document.querySelectorAll('.panel').forEach(p =>
+    p.classList.toggle('active', p.id === `panel-${name}`)
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Logging helpers
+// ═══════════════════════════════════════════════════════════════════════════
+function logTo(id, msg, cls = '') {
+  const el = document.getElementById(id);
+  el.innerHTML += cls ? `<span class="${cls}">${msg}</span>\n` : msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+function clearLog(id) { document.getElementById(id).innerHTML = ''; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Generic GLB parser — returns the raw gltf object (scene + animations etc.)
+// ═══════════════════════════════════════════════════════════════════════════
+function loadGLB(buffer) {
+  return new Promise((resolve, reject) => {
+    new GLTFLoader().parse(buffer, '', resolve, reject);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Drag-and-drop / file picker (shared across both panels)
+// ═══════════════════════════════════════════════════════════════════════════
+window.dzOver  = (e, id) => { e.preventDefault(); zoneEl(id)?.classList.add('over'); };
+window.dzLeave = (id)    => { zoneEl(id)?.classList.remove('over'); };
+window.dzDrop  = (e, id) => {
+  e.preventDefault();
+  zoneEl(id)?.classList.remove('over');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(id, file);
+};
+window.dzPick  = (e, id) => { const f = e.target.files[0]; if (f) handleFile(id, f); };
+
+// Unified zone resolver — always ${id}-zone
+function zoneEl(id) {
+  return document.getElementById(`${id}-zone`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Route file to correct handler based on slot id
+// ═══════════════════════════════════════════════════════════════════════════
+function handleFile(id, file) {
+  if (id === 'insp') return inspLoad(file);
+  if (id === 'mg-a') return mergeLoad('a', file);
+  if (id === 'mg-b') return mergeLoad('b', file);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ██  INSPECTOR
+// ═══════════════════════════════════════════════════════════════════════════
+let inspGltf            = null;  // raw gltf result
+let inspBuffer          = null;  // original ArrayBuffer
+let inspRenames         = {};    // uuid → new node name
+let inspAttrRenameCount = 0;     // attribute key renames
+let inspGeomChanges     = 0;     // attribute add/delete operations
+let currentInspNode     = null;  // node shown in attrs panel
+
+async function inspLoad(file) {
+  clearLog('insp-log');
+  logTo('insp-log', `Loading ${file.name} …`);
+  try {
+    inspBuffer = await file.arrayBuffer();
+    inspGltf   = await loadGLB(inspBuffer.slice(0)); // slice so parse doesn't detach
+    inspRenames = {}; inspAttrRenameCount = 0; inspGeomChanges = 0; currentInspNode = null;
+
+    // Update drop zone
+    zoneEl('insp').classList.add('loaded');
+    document.getElementById('insp-prompt').style.display = 'none';
+    const fileEl = document.getElementById('insp-file');
+    fileEl.textContent = file.name;
+    fileEl.style.display = 'block';
+
+    // Count things
+    let meshCount = 0, pointCount = 0, ptPtCount = 0;
+    inspGltf.scene.traverse(c => {
+      if (c.isMesh)   meshCount++;
+      if (c.isPoints) { pointCount++; ptPtCount += (c.geometry.attributes.position?.count || 0); }
+    });
+    document.getElementById('insp-meta').textContent =
+      `${meshCount} mesh · ${pointCount} pt-cloud · ${ptPtCount.toLocaleString()} pts`;
+
+    // Build tree
+    document.getElementById('insp-tree-card').style.display = 'block';
+    renderTree(inspGltf.scene, document.getElementById('insp-tree'), 0);
+
+    logTo('insp-log', `  ✓ Loaded — ${nodeCount(inspGltf.scene)} nodes`, 'ok');
+    updateSaveBtn();
+  } catch(e) {
+    logTo('insp-log', `  ✗ ${e}`, 'err');
+  }
+}
+
+function nodeCount(node) {
+  let n = 1;
+  node.children.forEach(c => n += nodeCount(c));
+  return n;
+}
+
+// ── Render tree ───────────────────────────────────────────────────────────
+function renderTree(node, container, depth) {
+  container.innerHTML = '';
+  buildTreeNodes(node, container, depth);
+}
+
+function buildTreeNodes(node, container, depth) {
+  const row = document.createElement('div');
+  row.className = 'tree-node';
+  row.dataset.uuid = node.uuid;
+
+  // Indent
+  for (let i = 0; i < depth; i++) {
+    const sp = document.createElement('span');
+    sp.className = 'tree-indent';
+    sp.innerHTML = i === depth - 1 ? '<span style="color:#333">└</span>' : '<span style="color:#222">│</span>';
+    row.appendChild(sp);
+  }
+
+  // Icon + badge
+  let icon = '○', badgeClass = '', badgeText = '';
+  if (node.isScene)  { icon = '◉'; badgeClass = 'badge-scene';  badgeText = 'SCENE'; }
+  else if (node.isGroup)  { icon = '◈'; badgeClass = 'badge-group';  badgeText = 'GROUP'; }
+  else if (node.isMesh)   { icon = '▣'; badgeClass = 'badge-mesh';   badgeText = 'MESH';  }
+  else if (node.isPoints) { icon = '·'; badgeClass = 'badge-points'; badgeText = 'POINTS'; }
+
+  const iconEl = document.createElement('span');
+  iconEl.className = 'tree-icon';
+  iconEl.textContent = icon;
+  row.appendChild(iconEl);
+
+  // Inline-editable name
+  const nameEl = document.createElement('span');
+  nameEl.className = 'tree-name';
+  nameEl.textContent = node.name || '(unnamed)';
+  nameEl.title = 'Click to rename';
+  nameEl.onclick = () => { showAttrs(node); startRename(nameEl, node); };
+  row.appendChild(nameEl);
+
+  if (badgeText) {
+    const badge = document.createElement('span');
+    badge.className = `tree-badge ${badgeClass}`;
+    badge.textContent = badgeText;
+    row.appendChild(badge);
+  }
+
+  // Point count chip
+  if (node.isPoints) {
+    const cnt = node.geometry.attributes.position?.count || 0;
+    const cntEl = document.createElement('span');
+    cntEl.className = 'tree-pts-count';
+    cntEl.textContent = `${cnt.toLocaleString()}`;
+    row.appendChild(cntEl);
+  }
+
+  // Type label
+  const typeEl = document.createElement('span');
+  typeEl.className = 'tree-type';
+  typeEl.textContent = node.type;
+  row.appendChild(typeEl);
+
+  // Click row → show attrs
+  row.onclick = (e) => {
+    if (e.target === nameEl) return; // let rename handle it
+    showAttrs(node);
+    document.querySelectorAll('.tree-node').forEach(r => r.style.background = '');
+    row.style.background = '#1c1c28';
+  };
+
+  container.appendChild(row);
+
+  node.children.forEach(child => buildTreeNodes(child, container, depth + 1));
+}
+
+// ── Inline rename ─────────────────────────────────────────────────────────
+function startRename(nameEl, node) {
+  if (nameEl.classList.contains('editing')) return;
+  nameEl.classList.add('editing');
+  nameEl.contentEditable = 'true';
+  nameEl.focus();
+  // Select all text
+  const range = document.createRange();
+  range.selectNodeContents(nameEl);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+
+  const finish = () => {
+    nameEl.classList.remove('editing');
+    nameEl.contentEditable = 'false';
+    const newName = nameEl.textContent.trim();
+    if (newName && newName !== node.name) {
+      const oldName = node.name;
+      node.name = newName;
+      inspRenames[node.uuid] = { oldName, newName };
+      logTo('insp-log', `  ✎ "${oldName}" → "${newName}"`, 'info');
+    } else {
+      nameEl.textContent = node.name || '(unnamed)';
+    }
+    updateSaveBtn();
+  };
+
+  nameEl.onblur = finish;
+  nameEl.onkeydown = (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); nameEl.blur(); }
+    if (e.key === 'Escape') { nameEl.textContent = node.name; nameEl.blur(); }
+  };
+}
+
+function updateSaveBtn() {
+  const count = Object.keys(inspRenames).length + inspAttrRenameCount + inspGeomChanges;
+  document.getElementById('insp-save-btn').disabled = count === 0;
+  const chip = document.getElementById('insp-rename-count');
+  if (count > 0) {
+    chip.style.display = 'inline-flex';
+    document.getElementById('insp-rename-n').textContent = count;
+  } else {
+    chip.style.display = 'none';
+  }
+}
+
+// ── Attribute panel ───────────────────────────────────────────────────────
+function showAttrs(node) {
+  currentInspNode = node;
+  renderAttrs();
+}
+
+function renderAttrs() {
+  const node  = currentInspNode;
+  if (!node) return;
+
+  const card  = document.getElementById('insp-attr-card');
+  const body  = document.getElementById('insp-attr-body');
+  const title = document.getElementById('insp-attr-title');
+  card.style.display = 'block';
+
+  title.textContent = `${node.name || '(unnamed)'} — ${node.type}`;
+
+  const p = node.position, rot = node.rotation, s = node.scale;
+  const rows = [
+    ['position', `${p.x.toFixed(4)},  ${p.y.toFixed(4)},  ${p.z.toFixed(4)}`,   'Vector3'],
+    ['rotation', `${rot.x.toFixed(4)}, ${rot.y.toFixed(4)}, ${rot.z.toFixed(4)}`, 'Euler (rad)'],
+    ['scale',    `${s.x.toFixed(4)},  ${s.y.toFixed(4)},  ${s.z.toFixed(4)}`,   'Vector3'],
+    ['uuid',     node.uuid.slice(0, 18) + '…', 'string'],
+    ['visible',  String(node.visible), 'bool'],
+    ['children', node.children.length, 'number'],
+  ];
+  if (node.geometry?.index)
+    rows.push(['geom.index', `count=${node.geometry.index.count}`, 'index']);
+  if (node.material) {
+    const m = node.material;
+    rows.push(['material.type', m.type, 'string']);
+    if (m.color)             rows.push(['material.color',   `#${m.color.getHexString()}`, 'Color']);
+    if (m.opacity !== undefined) rows.push(['material.opacity', m.opacity.toFixed(3), 'number']);
+  }
+
+  let html = `
+    <table class="attr-table">
+      <thead><tr><th>Property</th><th>Value</th><th>Type</th></tr></thead>
+      <tbody>${rows.map(([n,v,t]) =>
+        `<tr><td class="attr-name">${n}</td><td class="attr-val">${v}</td><td class="attr-type">${t}</td></tr>`
+      ).join('')}</tbody>
+    </table>`;
+
+  if (node.geometry) {
+    const hasAll = Object.keys(node.geometry.attributes).length > 0;
+    html += `
+    <div style="margin-top:18px;">
+      <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+                  color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+        Geometry Attributes
+        ${hasAll
+          ? '<span style="color:#444;font-weight:400;letter-spacing:0;text-transform:none;">— click name to rename &nbsp;·&nbsp; × to delete</span>'
+          : ''}
+      </div>
+      ${hasAll ? `
+      <table class="attr-table" style="margin-bottom:4px;">
+        <thead><tr><th>Name</th><th>Count</th><th>Size</th><th>Array Type</th><th></th></tr></thead>
+        <tbody id="geom-attrs-body"></tbody>
+      </table>` : '<div style="font-size:11px;color:#333;margin-bottom:4px;">No attributes yet</div>'}
+      <div class="add-attr-row">
+        <input  type="text"   id="new-attr-name" placeholder="attr name"  class="attr-input" />
+        <select               id="new-attr-size"                           class="attr-select">
+          <option value="1">size 1</option><option value="2">size 2</option>
+          <option value="3">size 3</option><option value="4">size 4</option>
+        </select>
+        <input  type="number" id="new-attr-fill" value="0" step="any"     class="attr-input-sm" title="Fill value" />
+        <button class="btn btn-ghost" onclick="addAttr()" style="padding:5px 12px;font-size:11px;">+ Add</button>
+      </div>
+    </div>`;
+  }
+
+  body.innerHTML = html;
+
+  if (node.geometry) {
+    const tbody = document.getElementById('geom-attrs-body');
+    if (tbody) {
+      Object.entries(node.geometry.attributes).forEach(([key, attr]) => {
+        const arrayType = attr.array?.constructor?.name || 'unknown';
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        const nameEl = document.createElement('span');
+        nameEl.className          = 'attr-name attr-name-edit';
+        nameEl.textContent        = key;
+        nameEl.dataset.currentKey = key;
+        nameEl.title              = 'Click to rename';
+        nameEl.onclick            = () => startAttrRename(nameEl, node.geometry);
+        nameTd.appendChild(nameEl);
+
+        const cntTd  = Object.assign(document.createElement('td'), { className: 'attr-val',  textContent: attr.count });
+        const szTd   = Object.assign(document.createElement('td'), { className: 'attr-val',  textContent: attr.itemSize });
+        const typeTd = Object.assign(document.createElement('td'), { className: 'attr-type', textContent: arrayType });
+
+        const delTd  = document.createElement('td');
+        const delBtn = document.createElement('button');
+        delBtn.className   = 'btn-del-attr';
+        delBtn.textContent = '×';
+        delBtn.title       = `Delete "${key}"`;
+        delBtn.onclick     = () => deleteAttr(node.geometry, key);
+        delTd.appendChild(delBtn);
+
+        tr.append(nameTd, cntTd, szTd, typeTd, delTd);
+        tbody.appendChild(tr);
+      });
+    }
+  }
+}
+
+function deleteAttr(geometry, key) {
+  geometry.deleteAttribute(key);
+  inspGeomChanges++;
+  logTo('insp-log', `  − attr "${key}" deleted`, 'warn');
+  updateSaveBtn();
+  renderAttrs();
+}
+
+window.addAttr = function() {
+  const node = currentInspNode;
+  if (!node?.geometry) return;
+  const nameEl = document.getElementById('new-attr-name');
+  const sizeEl = document.getElementById('new-attr-size');
+  const fillEl = document.getElementById('new-attr-fill');
+  const name   = nameEl.value.trim();
+  const size   = parseInt(sizeEl.value, 10);
+  const fill   = parseFloat(fillEl.value) || 0;
+  if (!name) { nameEl.focus(); return; }
+  if (node.geometry.attributes[name]) {
+    logTo('insp-log', `  ✗ Attribute "${name}" already exists`, 'err'); return;
+  }
+  const ref   = node.geometry.attributes.position || Object.values(node.geometry.attributes)[0];
+  const count = ref?.count ?? 0;
+  const arr   = new Float32Array(count * size).fill(fill);
+  node.geometry.setAttribute(name, new THREE.BufferAttribute(arr, size));
+  inspGeomChanges++;
+  nameEl.value = '';
+  logTo('insp-log', `  + attr "${name}" added (count=${count}, itemSize=${size}, fill=${fill})`, 'info');
+  updateSaveBtn();
+  renderAttrs();
+};
+
+// ── Rename a geometry attribute key ──────────────────────────────────────
+function startAttrRename(nameEl, geometry) {
+  if (nameEl.classList.contains('editing')) return;
+  nameEl.classList.add('editing');
+  nameEl.contentEditable = 'true';
+  nameEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(nameEl);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+
+  const finish = () => {
+    nameEl.classList.remove('editing');
+    nameEl.contentEditable = 'false';
+    const newKey = nameEl.textContent.trim();
+    const oldKey = nameEl.dataset.currentKey;
+    if (newKey && newKey !== oldKey && geometry.attributes[oldKey]) {
+      const attrData = geometry.attributes[oldKey];
+      geometry.setAttribute(newKey, attrData);
+      geometry.deleteAttribute(oldKey);
+      nameEl.dataset.currentKey = newKey;
+      inspAttrRenameCount++;
+      logTo('insp-log', `  ✎ attr "${oldKey}" → "${newKey}"`, 'info');
+      updateSaveBtn();
+      renderAttrs();
+    } else {
+      nameEl.textContent = oldKey;
+    }
+  };
+
+  nameEl.onblur = finish;
+  nameEl.onkeydown = (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); nameEl.blur(); }
+    if (e.key === 'Escape') { nameEl.textContent = nameEl.dataset.currentKey; nameEl.blur(); }
+  };
+}
+
+// ── Save renamed GLB ──────────────────────────────────────────────────────
+window.inspSave = async function() {
+  if (!inspGltf) return;
+  logTo('insp-log', 'Exporting renamed GLB …');
+  try {
+    const blob = await exportScene(inspGltf.scene);
+    const fname = (document.getElementById('insp-file').textContent || 'renamed')
+      .replace(/\.glb$/i, '') + '_renamed.glb';
+    downloadBlob(blob, fname);
+    logTo('insp-log', `  ✓ Saved ${fname}  (${(blob.size/1024).toFixed(1)} KB)`, 'ok');
+    inspRenames = {}; inspAttrRenameCount = 0; inspGeomChanges = 0;
+    updateSaveBtn();
+  } catch(e) {
+    logTo('insp-log', `  ✗ ${e}`, 'err');
+  }
+};
+
+window.inspReset = function() {
+  inspGltf = null; inspBuffer = null; inspRenames = {}; inspAttrRenameCount = 0; inspGeomChanges = 0; currentInspNode = null;
+  zoneEl('insp').classList.remove('loaded');
+  document.getElementById('insp-prompt').style.display = '';
+  document.getElementById('insp-file').style.display = 'none';
+  document.getElementById('insp-meta').textContent = '';
+  document.getElementById('insp-tree-card').style.display = 'none';
+  document.getElementById('insp-attr-card').style.display = 'none';
+  clearLog('insp-log');
+  logTo('insp-log', 'Load a GLB to inspect…');
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ██  MERGE
+// ═══════════════════════════════════════════════════════════════════════════
+const mgState = { a: null, b: null };
+
+async function mergeLoad(slot, file) {
+  clearLog('mg-log');
+  logTo('mg-log', `Loading ${slot.toUpperCase()}: ${file.name} …`);
+  try {
+    const buf = await file.arrayBuffer();
+    const gltf = await loadGLB(buf);
+    const pts = extractPoints(gltf.scene);
+    const quad = extractQuad(gltf.scene);
+
+    if (pts.length === 0) {
+      logTo('mg-log', `  ✗ No point cloud in ${file.name}`, 'err'); return;
+    }
+
+    mgState[slot] = { pts, quad };
+
+    zoneEl(`mg-${slot}`).classList.add('loaded');
+    document.getElementById(`mg-${slot}-prompt`).style.display = 'none';
+    const fEl = document.getElementById(`mg-${slot}-file`);
+    fEl.textContent = file.name; fEl.style.display = 'block';
+    document.getElementById(`mg-${slot}-meta`).textContent =
+      `${pts.length.toLocaleString()} points`;
+
+    logTo('mg-log', `  ✓ ${pts.length.toLocaleString()} points`, 'ok');
+    updateMgBtn();
+  } catch(e) {
+    logTo('mg-log', `  ✗ ${e}`, 'err');
+  }
+}
+
+function updateMgBtn() {
+  const both = mgState.a && mgState.b;
+  const any  = mgState.a || mgState.b;
+  const btn  = document.getElementById('mg-btn');
+  btn.disabled = !any;
+  btn.textContent = both ? 'Merge & Download' : 'Export GLB';
+}
+
+window.mergeAndDownload = async function() {
+  const one  = mgState.a || mgState.b;
+  const both = mgState.a && mgState.b;
+  if (!one) return;
+  clearLog('mg-log');
+  const merged = both
+    ? [...mgState.a.pts, ...mgState.b.pts]
+    : [...one.pts];
+  const quad = both ? (mgState.a.quad || mgState.b.quad) : one.quad;
+  if (both) {
+    logTo('mg-log',
+      `Merging ${mgState.a.pts.length.toLocaleString()} + ` +
+      `${mgState.b.pts.length.toLocaleString()} = ${merged.length.toLocaleString()} points …`, 'info');
+  } else {
+    logTo('mg-log', `Exporting ${merged.length.toLocaleString()} points …`, 'info');
+  }
+  try {
+    const scene = buildMergedScene(merged, quad);
+    const blob  = await exportScene(scene);
+    downloadBlob(blob, 'merged.glb');
+    logTo('mg-log', `  ✓ Saved merged.glb  (${(blob.size/1024).toFixed(1)} KB)`, 'ok');
+  } catch(e) {
+    logTo('mg-log', `  ✗ ${e}`, 'err');
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared helpers
+// ═══════════════════════════════════════════════════════════════════════════
+function extractPoints(scene) {
+  const out = [];
+  scene.traverse(child => {
+    if (!child.isPoints) return;
+    const g = child.geometry;
+    const pos   = g.attributes.position?.array;
+    const col   = g.attributes.color?.array;
+    const uv    = g.attributes.uv?.array;
+    const depth = g.attributes._depth?.array;
+    const zOff  = g.attributes._zOffset?.array;
+    const size  = (g.attributes._size || g.attributes.size)?.array;
+    const n     = pos ? pos.length / 3 : 0;
+    for (let i = 0; i < n; i++) {
+      out.push({
+        x: pos[i*3], y: pos[i*3+1], z: pos[i*3+2],
+        r: col ? col[i*3]   : 1, g: col ? col[i*3+1] : 1, b: col ? col[i*3+2] : 1,
+        u: uv ? uv[i*2] : 0, v: uv ? uv[i*2+1] : 0,
+        depthSample: depth ? depth[i] : 0.5,
+        zOffset: zOff ? zOff[i] : 0,
+        size: size ? size[i] : 1,
+      });
+    }
+  });
+  return out;
+}
+
+function extractQuad(scene) {
+  let quad = null;
+  scene.traverse(c => {
+    if (!quad && c.isMesh && c.name === 'ImageQuad') quad = c.geometry.clone();
+  });
+  return quad;
+}
+
+function buildMergedScene(pts, quadGeom) {
+  const n = pts.length;
+  const positions    = new Float32Array(n * 3);
+  const colors       = new Float32Array(n * 3);
+  const uvs          = new Float32Array(n * 2);
+  const depthSamples = new Float32Array(n);
+  const zOffsets     = new Float32Array(n);
+  const sizes        = new Float32Array(n);
+
+  pts.forEach((p, i) => {
+    positions[i*3]   = p.x; positions[i*3+1] = p.y; positions[i*3+2] = p.z;
+    colors[i*3]      = p.r; colors[i*3+1]    = p.g; colors[i*3+2]    = p.b;
+    uvs[i*2]         = p.u; uvs[i*2+1]       = p.v;
+    depthSamples[i]  = p.depthSample;
+    zOffsets[i]      = p.zOffset;
+    sizes[i]         = p.size;
+  });
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+  geom.setAttribute('uv',       new THREE.BufferAttribute(uvs, 2));
+  geom.setAttribute('_depth',   new THREE.BufferAttribute(depthSamples, 1));
+  geom.setAttribute('_zOffset', new THREE.BufferAttribute(zOffsets, 1));
+  geom.setAttribute('_size',    new THREE.BufferAttribute(sizes, 1));
+
+  const cloud = new THREE.Points(
+    geom, new THREE.PointsMaterial({ size: 0.1, vertexColors: true, sizeAttenuation: true })
+  );
+  cloud.name = 'PointCloud';
+
+  const root = new THREE.Group();
+  root.name = 'PointCloudExport';
+
+  if (quadGeom) {
+    const quad = new THREE.Mesh(quadGeom, new THREE.MeshBasicMaterial({
+      color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.18
+    }));
+    quad.name = 'ImageQuad';
+    root.add(quad);
+  }
+  root.add(cloud);
+  return root;
+}
+
+function exportScene(sceneOrGroup) {
+  return new Promise((resolve, reject) => {
+    new GLTFExporter().parse(
+      sceneOrGroup,
+      result => resolve(
+        result instanceof ArrayBuffer
+          ? new Blob([result], { type: 'model/gltf-binary' })
+          : new Blob([JSON.stringify(result)], { type: 'application/json' })
+      ),
+      reject,
+      { binary: true }
+    );
+  });
+}
+
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
