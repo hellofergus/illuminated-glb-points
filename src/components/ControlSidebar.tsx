@@ -113,6 +113,7 @@ type ControlSidebarProps = {
   setAddAlignToEdge: (value: boolean) => void;
   showProjectionMesh: boolean;
   setShowProjectionMesh: (value: boolean) => void;
+  handleReduceDensity: (targetCount: number) => void;
 };
 
 type AccordionSectionProps = {
@@ -229,10 +230,12 @@ export function ControlSidebar({
   addAlignToEdge,
   setAddAlignToEdge,
   showProjectionMesh,
-  setShowProjectionMesh
+  setShowProjectionMesh,
+  handleReduceDensity
 }: ControlSidebarProps) {
   const [selectedPointColorDraft, setSelectedPointColorDraft] = React.useState(selectedPointColorHex ?? '#FFFFFF');
   const [colorTransformDrafts, setColorTransformDrafts] = React.useState(colorTransformPalettes);
+  const [densityTarget, setDensityTarget] = React.useState(() => Math.max(1, Math.floor(pointCount * 0.5)));
 
   React.useEffect(() => {
     setSelectedPointColorDraft(selectedPointColorHex ?? '#FFFFFF');
@@ -542,7 +545,7 @@ export function ControlSidebar({
             <>
               {toolInteractionMode === 'brush' && (
                 <div className="space-y-3 border-t border-tech-border/30 pt-3">
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-4 gap-2">
                     <button
                       onClick={() => setVisibilityBrushAction('hide')}
                       className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${visibilityBrushAction === 'hide' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
@@ -560,6 +563,12 @@ export function ControlSidebar({
                       className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${visibilityBrushAction === 'select' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
                     >
                       Select
+                    </button>
+                    <button
+                      onClick={() => setVisibilityBrushAction('thin')}
+                      className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${visibilityBrushAction === 'thin' ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                    >
+                      Thin
                     </button>
                   </div>
 
@@ -1224,6 +1233,35 @@ export function ControlSidebar({
               <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${params.invertDepth ? 'right-1' : 'left-1'}`} />
             </button>
           </div>
+        </div>
+      </AccordionSection>
+
+      <AccordionSection title="07 // Density Reduction">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Current</span>
+            <span className="text-[9px] font-mono text-tech-accent">{pointCount.toLocaleString()}</span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Target</label>
+            <input
+              type="number"
+              min="1"
+              step="100"
+              value={densityTarget}
+              onChange={e => setDensityTarget(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-24 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => handleReduceDensity(densityTarget)}
+            disabled={pointCount === 0 || densityTarget >= pointCount}
+            className="w-full py-1.5 border border-tech-border text-[9px] font-mono uppercase hover:border-tech-accent hover:text-tech-accent transition-all disabled:opacity-30"
+          >
+            [ APPLY_REDUCTION ]
+          </button>
+          <div className="text-[8px] opacity-30 font-mono italic">Grid thinning — keeps the brightest point per spatial cell. Use Undo to revert.</div>
         </div>
       </AccordionSection>
 

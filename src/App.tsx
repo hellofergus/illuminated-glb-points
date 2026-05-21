@@ -2590,6 +2590,8 @@ export default function App() {
               pointIndexLabels.children[i].position.y = positionAttr.getY(i) + Math.max(nextSize * 4, 4);
             }
             affectedPointCount += 1;
+          } else if (settings.mode === 'thin') {
+            // collected + processed in post-loop thin pass below
           } else {
             if (brushInfluence <= 0) {
               continue;
@@ -2633,6 +2635,97 @@ export default function App() {
           visibilityAttr.needsUpdate = true;
           syncPointIndexLabelVisibility();
         }
+
+        // ── Thin brush post-pass ──────────────────────────────────────────────
+        if (settings.mode === 'thin') {
+          // Gather all visible points inside the brush radius
+          type ThinCandidate = { index: number; wx: number; wy: number };
+          const candidates: ThinCandidate[] = [];
+          for (let i = 0; i < visibilityAttr.count; i++) {
+            if (visibilityAttr.getX(i) < 0.5) continue;
+            const pos2 = new THREE.Vector3().fromBufferAttribute(positionAttr, i);
+            const wp = pos2.clone().applyMatrix4(pointCloud.matrixWorld);
+            if (wp.distanceTo(center) >= settings.size) continue;
+            candidates.push({ index: i, wx: wp.x, wy: wp.y });
+          }
+          if (candidates.length > 1) {
+            // Pure density culling: remove tightly-clustered points regardless of colour.
+            // Shuffle first so no spatial bias, then run Poisson-disk: a point is accepted
+            // only if it is at least minDist away from every already-accepted point.
+            // Dense lumps lose many points; already-sparse areas pass through untouched.
+            const keepFraction = Math.max(0.05, 1 - settings.strength * 0.8);
+            const targetKeep = Math.max(1, Math.round(candidates.length * keepFraction));
+
+            let minX2 = Infinity, maxX2 = -Infinity, minY2 = Infinity, maxY2 = -Infinity;
+            for (const c of candidates) {
+              if (c.wx < minX2) minX2 = c.wx; if (c.wx > maxX2) maxX2 = c.wx;
+              if (c.wy < minY2) minY2 = c.wy; if (c.wy > maxY2) maxY2 = c.wy;
+            }
+            const area = Math.max((maxX2 - minX2) * (maxY2 - minY2), 0.001);
+            const minDist = Math.sqrt(area / (targetKeep * (Math.PI / 4)));
+            const minDist2 = minDist * minDist;
+            const gridCell = minDist / Math.SQRT2;
+            const gridCols2 = Math.ceil((maxX2 - minX2) / Math.max(gridCell, 0.001)) + 2;
+            const gridRows2 = Math.ceil((maxY2 - minY2) / Math.max(gridCell, 0.001)) + 2;
+
+            // Shuffle for unbiased spatial sampling
+            const shuffled = candidates.slice().sort(() => Math.random() - 0.5);
+            const keepSet = new Set<number>();
+            // grid maps gridKey → array of wx/wy of accepted points in that cell
+            const poissonGrid = new Map<number, Array<{ wx: number; wy: number }>>();
+
+            for (const c of shuffled) {
+              const col = Math.floor((c.wx - minX2) / Math.max(gridCell, 0.001));
+              const row = Math.floor((c.wy - minY2) / Math.max(gridCell, 0.001));
+
+              let tooClose = false;
+              outer2:
+              for (let dr = -2; dr <= 2; dr++) {
+                const nr = row + dr;
+                if (nr < 0 || nr >= gridRows2) continue;
+                for (let dc = -2; dc <= 2; dc++) {
+                  const nc = col + dc;
+                  if (nc < 0 || nc >= gridCols2) continue;
+                  const neighbours = poissonGrid.get(nr * gridCols2 + nc);
+                  if (!neighbours) continue;
+                  for (const n of neighbours) {
+                    const dx = c.wx - n.wx, dy = c.wy - n.wy;
+                    if (dx * dx + dy * dy < minDist2) { tooClose = true; break outer2; }
+                  }
+                }
+              }
+
+              if (!tooClose) {
+                keepSet.add(c.index);
+                const key = row * gridCols2 + col;
+                if (!poissonGrid.has(key)) poissonGrid.set(key, []);
+                poissonGrid.get(key)!.push({ wx: c.wx, wy: c.wy });
+              }
+            }
+
+            // Fallback: if Poisson-disk under-shot, fill from remaining candidates
+            if (keepSet.size < targetKeep) {
+              for (const c of shuffled) {
+                if (keepSet.size >= targetKeep) break;
+                if (!keepSet.has(c.index)) keepSet.add(c.index);
+              }
+            }
+
+            let thinned = 0;
+            for (const c of candidates) {
+              if (!keepSet.has(c.index)) {
+                visibilityAttr.setX(c.index, 0);
+                thinned++;
+              }
+            }
+            if (thinned > 0) {
+              visibilityAttr.needsUpdate = true;
+              syncPointIndexLabelVisibility();
+              if (forcePaint) setStatus(`Thinned ${thinned} points in brush area`);
+            }
+          }
+        }
+        // ─────────────────────────────────────────────────────────────────────
       }
     };
 
@@ -3555,8 +3648,93 @@ export default function App() {
     }
   };
 
-  const handleExportDepthPNG = () => {
-    const canvas = paintedDepthCanvasRef.current;
+  const handleReduceDensity = (targetCount: number) => {
+    const current = pointsRef.current;
+    if (current.length === 0 || targetCount >= current.length || targetCount < 1) return;
+
+    // Compute XY bounding box
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of current) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    const bboxW = Math.max(maxX - minX, 0.001);
+    const bboxH = Math.max(maxY - minY, 0.001);
+
+    // Density-aware Poisson-disk thinning:
+    //   - A point is accepted only if no already-accepted point is within minDist.
+    //   - Points are shuffled randomly so no colour/brightness bias — dense clumps
+    //     lose points regardless of their colour, sparse areas pass through untouched.
+    const minDist = Math.sqrt((bboxW * bboxH) / (targetCount * (Math.PI / 4)));
+    const gridCell = minDist / Math.SQRT2;           // grid cell ≤ minDist/√2 ensures only 5×5 cell check
+    const gridCols = Math.ceil(bboxW / gridCell) + 2;
+    const gridRows = Math.ceil(bboxH / gridCell) + 2;
+
+    // Shuffle indices for unbiased spatial sampling (no brightness preference)
+    const order = current
+      .map((_, i) => i)
+      .sort(() => Math.random() - 0.5);
+
+    const accepted = new Set<number>();
+    // Sparse grid: maps gridKey → array of accepted point indices in that cell
+    const grid = new Map<number, number[]>();
+
+    const minDist2 = minDist * minDist;
+
+    for (const idx of order) {
+      if (accepted.size >= targetCount) break;
+      const p = current[idx];
+      const col = Math.floor((p.x - minX) / gridCell);
+      const row = Math.floor((p.y - minY) / gridCell);
+
+      // Check a 5×5 neighbourhood of grid cells (covers full minDist radius)
+      let tooClose = false;
+      outer:
+      for (let dr = -2; dr <= 2; dr++) {
+        const nr = row + dr;
+        if (nr < 0 || nr >= gridRows) continue;
+        for (let dc = -2; dc <= 2; dc++) {
+          const nc = col + dc;
+          if (nc < 0 || nc >= gridCols) continue;
+          const neighbours = grid.get(nr * gridCols + nc);
+          if (!neighbours) continue;
+          for (const ni of neighbours) {
+            const np = current[ni];
+            const dx = p.x - np.x, dy = p.y - np.y;
+            if (dx * dx + dy * dy < minDist2) { tooClose = true; break outer; }
+          }
+        }
+      }
+
+      if (!tooClose) {
+        accepted.add(idx);
+        const key = row * gridCols + col;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key)!.push(idx);
+      }
+    }
+
+    // Fallback: Poisson-disk packing is ~55% efficient in practice, so when the
+    // target is close to current count the algorithm may under-shoot.  Fill any
+    // remaining slots with the brightest available rejected points so the output
+    // always equals targetCount exactly.
+    if (accepted.size < targetCount) {
+      for (const idx of order) {
+        if (accepted.size >= targetCount) break;
+        if (!accepted.has(idx)) accepted.add(idx);
+      }
+    }
+
+    pushToHistory();
+    const reduced = Array.from(accepted).map(i => ({ ...current[i] }));
+    applyPointSnapshot(reduced);
+    setStatus(`Density reduced: ${current.length.toLocaleString()} → ${reduced.length.toLocaleString()} points`);
+  };
+
+  const handleExportDepthPNG = () => {    const canvas = paintedDepthCanvasRef.current;
     if (!canvas) { setStatus('No depth map loaded'); return; }
     canvas.toBlob((blob) => {
       if (!blob) { setStatus('Export failed'); return; }
@@ -3781,6 +3959,7 @@ export default function App() {
           setAddAlignToEdge={setAddAlignToEdge}
           showProjectionMesh={showProjectionMesh}
           setShowProjectionMesh={setShowProjectionMesh}
+          handleReduceDensity={handleReduceDensity}
         />
 
         {/* Right Content: Previews & Visualizers */}
