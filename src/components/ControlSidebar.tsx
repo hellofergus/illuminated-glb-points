@@ -116,6 +116,7 @@ type ControlSidebarProps = {
   showProjectionMesh: boolean;
   setShowProjectionMesh: (value: boolean) => void;
   handleReduceDensity: (targetCount: number) => void;
+  handleRescaleResolution: (targetW: number, targetH: number) => void;
 };
 
 type AccordionSectionProps = {
@@ -235,11 +236,14 @@ export function ControlSidebar({
   setAddAlignToEdge,
   showProjectionMesh,
   setShowProjectionMesh,
-  handleReduceDensity
+  handleReduceDensity,
+  handleRescaleResolution,
 }: ControlSidebarProps) {
   const [selectedPointColorDraft, setSelectedPointColorDraft] = React.useState(selectedPointColorHex ?? '#FFFFFF');
   const [colorTransformDrafts, setColorTransformDrafts] = React.useState(colorTransformPalettes);
   const [densityTarget, setDensityTarget] = React.useState(() => Math.max(1, Math.floor(pointCount * 0.5)));
+  const [rescaleW, setRescaleW] = React.useState(1024);
+  const [rescaleH, setRescaleH] = React.useState(1024);
 
   React.useEffect(() => {
     setSelectedPointColorDraft(selectedPointColorHex ?? '#FFFFFF');
@@ -1251,6 +1255,54 @@ export function ControlSidebar({
               <div className={`absolute top-1 w-2 h-2 rounded-full bg-tech-text/60 transition-all ${params.invertDepth ? 'right-1' : 'left-1'}`} />
             </button>
           </div>
+        </div>
+      </AccordionSection>
+
+      <AccordionSection title="08 // Resolution Rescale">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Width</label>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={rescaleW}
+              onChange={e => setRescaleW(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-24 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Height</label>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={rescaleH}
+              onChange={e => setRescaleH(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-24 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            {[512, 1024, 2048].map(size => (
+              <button
+                key={size}
+                type="button"
+                onClick={() => { setRescaleW(size); setRescaleH(size); }}
+                className="py-1 border border-tech-border text-[9px] font-mono uppercase hover:border-tech-accent hover:text-tech-accent transition-all"
+              >
+                {size}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => handleRescaleResolution(rescaleW, rescaleH)}
+            disabled={pointCount === 0}
+            className="w-full py-1.5 border border-tech-border text-[9px] font-mono uppercase hover:border-tech-accent hover:text-tech-accent transition-all disabled:opacity-30"
+          >
+            [ APPLY_RESCALE ]
+          </button>
+          <div className="text-[8px] opacity-30 font-mono italic">Remaps XY positions as if generated from a {rescaleW}×{rescaleH} image. Use Undo to revert.</div>
         </div>
       </AccordionSection>
 

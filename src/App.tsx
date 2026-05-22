@@ -3857,6 +3857,21 @@ export default function App() {
     setStatus(`Density reduced: ${current.length.toLocaleString()} → ${reduced.length.toLocaleString()} points`);
   };
 
+  const handleRescaleResolution = (targetW: number, targetH: number) => {
+    const current = pointsRef.current;
+    if (current.length === 0) return;
+    const srcW = stats.width;
+    const srcH = stats.height;
+    if (srcW === 0 || srcH === 0) { setStatus('Notice: No source image loaded — cannot rescale'); return; }
+    const scaleX = targetW / srcW;
+    const scaleY = targetH / srcH;
+    pushToHistory();
+    const rescaled = current.map(p => ({ ...p, x: p.x * scaleX, y: p.y * scaleY }));
+    applyPointSnapshot(rescaled);
+    setStats(prev => ({ ...prev, width: targetW, height: targetH }));
+    setStatus(`Resolution rescaled: ${srcW}×${srcH} → ${targetW}×${targetH}`);
+  };
+
   const handleExportDepthPNG = () => {    const canvas = paintedDepthCanvasRef.current;
     if (!canvas) { setStatus('No depth map loaded'); return; }
     canvas.toBlob((blob) => {
@@ -4085,6 +4100,7 @@ export default function App() {
           showProjectionMesh={showProjectionMesh}
           setShowProjectionMesh={setShowProjectionMesh}
           handleReduceDensity={handleReduceDensity}
+          handleRescaleResolution={handleRescaleResolution}
         />
 
         {/* Right Content: Previews & Visualizers */}
