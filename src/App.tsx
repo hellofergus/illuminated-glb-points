@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 // @ts-ignore
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
@@ -187,6 +187,7 @@ export default function App() {
   const [selectionModeEnabled, setSelectionModeEnabled] = useState(false);
   const [selectedPointIndices, setSelectedPointIndices] = useState<number[]>([]);
   const [selectionDragState, setSelectionDragState] = useState<SelectionDragState | null>(null);
+  const [selectionRemoveMode, setSelectionRemoveMode] = useState(false);
   const [savedSelections, setSavedSelections] = useState<SavedSelection[]>([]);
   const [showPointIndices, setShowPointIndices] = useState(false);
   const [hasSavedSession, setHasSavedSession] = useState<boolean>(() => {
@@ -206,6 +207,9 @@ export default function App() {
   // GLB export settings
   const [glbExportScale, setGlbExportScale] = useState<number>(1.0);
   const [glbMaxParticleSize, setGlbMaxParticleSize] = useState<number | null>(null);
+  const [glbLumNormEnabled, setGlbLumNormEnabled] = useState<boolean>(false);
+  const [glbLumNormMin, setGlbLumNormMin] = useState<number>(0.15);
+  const [glbLumNormMax, setGlbLumNormMax] = useState<number>(0.90);
 
   // Visual State
   const [maxPointSize, setMaxPointSize] = useState<number>(100);
@@ -295,6 +299,9 @@ export default function App() {
   const selectionModeEnabledRef = useRef(selectionModeEnabled);
   const selectedPointIndicesRef = useRef(selectedPointIndices);
   const selectionDragStateRef = useRef<SelectionDragState | null>(selectionDragState);
+  const selectionRemoveModeRef = useRef(false);
+  const selectionRemoveModifierRef = useRef(false);
+  const dKeyHeldRef = useRef(false);
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
   const hasRestoredSessionRef = useRef(false);
   const sessionFileHandleRef = useRef<any>(null);
@@ -309,6 +316,7 @@ export default function App() {
   useEffect(() => { selectionModeEnabledRef.current = selectionModeEnabled; }, [selectionModeEnabled]);
   useEffect(() => { selectedPointIndicesRef.current = selectedPointIndices; }, [selectedPointIndices]);
   useEffect(() => { selectionDragStateRef.current = selectionDragState; }, [selectionDragState]);
+  useEffect(() => { selectionRemoveModeRef.current = selectionRemoveMode; }, [selectionRemoveMode]);
 
   const adjustBrushSize = (delta: number) => {
     setBrushSettings((prev) => ({
@@ -381,18 +389,26 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey) {
+      selectionRemoveModifierRef.current = event.ctrlKey || event.metaKey;
+      if (event.key.toLowerCase() === 'd') dKeyHeldRef.current = true;
+
+      if (event.altKey || event.shiftKey) {
         setIsAltNavigationActive(true);
       }
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Alt' || !event.altKey) {
+      selectionRemoveModifierRef.current = event.ctrlKey || event.metaKey;
+      if (event.key.toLowerCase() === 'd') dKeyHeldRef.current = false;
+
+      if (event.key === 'Alt' || event.key === 'Shift' || (!event.altKey && !event.shiftKey)) {
         setIsAltNavigationActive(false);
       }
     };
 
     const handleWindowBlur = () => {
+      selectionRemoveModifierRef.current = false;
+      dKeyHeldRef.current = false;
       setIsAltNavigationActive(false);
       setIsBrushing(false);
     };
@@ -408,10 +424,12 @@ export default function App() {
     };
   }, []);
 
-  // Lock rotation when brush is enabled
+  // Lock rotation/pan when brush or selection is enabled
   useEffect(() => {
     if (sceneRef.current?.controls) {
-      sceneRef.current.controls.enableRotate = (!brushSettings.enabled && !selectionModeEnabled) || isAltNavigationActive;
+      const orbitActive = (!brushSettings.enabled && !selectionModeEnabled) || isAltNavigationActive;
+      sceneRef.current.controls.enableRotate = orbitActive;
+      sceneRef.current.controls.enablePan = orbitActive;
     }
     if (brushIndicatorRef.current) {
       brushIndicatorRef.current.visible = brushSettings.enabled && !selectionModeEnabled && !isAltNavigationActive;
@@ -2609,9 +2627,10 @@ export default function App() {
 
         if (settings.mode === 'select') {
           if (selectedIndices.length > 0) {
-            setSelectedPointIndices((prev) => mergeSelectionIndices(prev, selectedIndices, true, false));
+            const removing = selectionRemoveModeRef.current || selectionRemoveModifierRef.current || dKeyHeldRef.current;
+            setSelectedPointIndices((prev) => mergeSelectionIndices(prev, selectedIndices, !removing, removing));
             if (forcePaint) {
-              setStatus(`Brush selected ${selectedIndices.length} points`);
+              setStatus(`Brush ${removing ? 'deselected' : 'selected'} ${selectedIndices.length} points`);
             }
           }
         } else {
@@ -2740,7 +2759,17 @@ export default function App() {
       const nearestHit = findNearestHit(getVisibleProjectedPointIndices(), pointer.x, pointer.y, 16);
 
       if (nearestHit) {
-        updateSelectedPoints([nearestHit.index], append, remove);
+        const alreadySelected = selectedPointIndicesRef.current.includes(nearestHit.index);
+
+        if (remove) {
+          if (alreadySelected) {
+            setSelectedPointIndices((prev) => prev.filter((index) => index !== nearestHit.index));
+          }
+          return;
+        }
+
+        const effectiveRemove = !append && alreadySelected;
+        updateSelectedPoints([nearestHit.index], append, effectiveRemove);
         return;
       }
 
@@ -2807,8 +2836,9 @@ export default function App() {
         return;
       }
 
-      if (selectionModeEnabledRef.current && e.button === 0 && !e.altKey) {
+      if (selectionModeEnabledRef.current && e.button === 0 && !e.altKey && !e.shiftKey) {
         e.preventDefault();
+        e.stopPropagation();
         const pointer = getCanvasPointer(e.clientX, e.clientY);
         if (pointer) {
           setSelectionDragState({
@@ -2816,8 +2846,8 @@ export default function App() {
             startY: pointer.y,
             currentX: pointer.x,
             currentY: pointer.y,
-            append: e.shiftKey,
-            remove: e.ctrlKey || e.metaKey
+            append: false,
+            remove: selectionRemoveModeRef.current || e.ctrlKey || e.metaKey || selectionRemoveModifierRef.current || dKeyHeldRef.current
           });
         }
         return;
@@ -2833,6 +2863,43 @@ export default function App() {
         addStrokeLastEmitWorldRef.current = null;
         setIsBrushing(true);
         applyBrush(e.clientX, e.clientY, true);
+      }
+    };
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!e.isTrusted || e.button !== 0 || e.altKey || !selectionModeEnabledRef.current) {
+        return;
+      }
+
+      if (e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const syntheticPointerDown = new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          button: e.button,
+          buttons: e.buttons,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          pointerId: e.pointerId,
+          pointerType: e.pointerType,
+          isPrimary: e.isPrimary,
+          pressure: e.pressure,
+          width: e.width,
+          height: e.height,
+          tiltX: e.tiltX,
+          tiltY: e.tiltY,
+          twist: e.twist
+        });
+
+        renderer.domElement.dispatchEvent(syntheticPointerDown);
+        return;
+      }
+
+      if (e.ctrlKey || e.metaKey || selectionRemoveModifierRef.current) {
+        e.stopPropagation();
       }
     };
 
@@ -2901,7 +2968,10 @@ export default function App() {
       addStrokeLastEmitWorldRef.current = null;
     };
 
+    const handleContextMenu = (e: MouseEvent) => { e.preventDefault(); };
+    renderer.domElement.addEventListener('pointerdown', handlePointerDown, true);
     renderer.domElement.addEventListener('mousedown', handleMouseDown);
+    renderer.domElement.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
 
@@ -2924,7 +2994,9 @@ export default function App() {
 
     return () => {
       controls.removeEventListener('end', handleControlsEnd);
+      renderer.domElement.removeEventListener('pointerdown', handlePointerDown, true);
       renderer.domElement.removeEventListener('mousedown', handleMouseDown);
+      renderer.domElement.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
       resizeObserver.disconnect();
@@ -3368,6 +3440,16 @@ export default function App() {
     setRedoStack((prev: HistorySnapshot[]) => prev.slice(0, -1));
   };
 
+  const clearSelectedPoints = () => {
+    if (selectedPointIndicesRef.current.length === 0) {
+      setStatus('Notice: No selected points to deselect');
+      return;
+    }
+
+    setSelectedPointIndices([]);
+    setStatus('Selection cleared');
+  };
+
   useEffect(() => {
     syncSelectedPointVisibility(selectedPointIndices);
   }, [selectedPointIndices, points]);
@@ -3604,6 +3686,19 @@ export default function App() {
     }
   };
 
+  const lumStats = useMemo(() => {
+    const visible = points.filter(p => p.visibility > 0.05);
+    if (visible.length === 0) return null;
+    let min = 1, max = 0, sum = 0;
+    for (const p of visible) {
+      const lum = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+      if (lum < min) min = lum;
+      if (lum > max) max = lum;
+      sum += lum;
+    }
+    return { min, max, mean: sum / visible.length };
+  }, [points]);
+
   const handleExportGLB = async () => {
     if (points.length === 0) return;
     setStatus('Exporting GLB...');
@@ -3631,7 +3726,35 @@ export default function App() {
           }))
         : exportedPoints;
 
-      const blob = await exportToGLB(scaledPoints, {
+      // Luminosity range normalization (applied at export only — viewport unchanged)
+      let finalPoints = scaledPoints;
+      if (glbLumNormEnabled) {
+        const visForNorm = scaledPoints.filter(p => p.visibility > 0.05);
+        let lumMin = Infinity, lumMax = -Infinity;
+        for (const p of visForNorm) {
+          const lum = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+          if (lum < lumMin) lumMin = lum;
+          if (lum > lumMax) lumMax = lum;
+        }
+        const lumRange = Math.max(lumMax - lumMin, 0.0001);
+        const outMin = glbLumNormMin;
+        const outMax = glbLumNormMax;
+        finalPoints = scaledPoints.map(p => {
+          const lum = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+          if (lum < 0.001) return p; // skip near-black to avoid divide-by-zero
+          const normalizedLum = (lum - lumMin) / lumRange;
+          const targetLum = outMin + normalizedLum * (outMax - outMin);
+          const scale = targetLum / lum;
+          return {
+            ...p,
+            r: Math.min(1, Math.max(0, p.r * scale)),
+            g: Math.min(1, Math.max(0, p.g * scale)),
+            b: Math.min(1, Math.max(0, p.b * scale)),
+          };
+        });
+      }
+
+      const blob = await exportToGLB(finalPoints, {
         imageWidth: stats.width,
         imageHeight: stats.height,
         xyScale: params.xyScale * glbExportScale,
@@ -3920,6 +4043,8 @@ export default function App() {
           selectedPointColorMixed={selectedPointColorMixed}
           selectedPointCount={selectedPointCount}
           selectionModeEnabled={selectionModeEnabled}
+          selectionRemoveMode={selectionRemoveMode}
+          setSelectionRemoveMode={setSelectionRemoveMode}
           setActiveTool={setActiveTool}
           pointCount={points.length}
           setAddAction={setAddAction}
@@ -4012,7 +4137,7 @@ export default function App() {
           </div>
 
           {/* Bottom Panels: Logs & Actions */}
-          <div className="h-44 border border-tech-border bg-tech-sidebar flex animate-in slide-in-from-bottom-4 duration-500 rounded-sm">
+          <div className="h-56 border border-tech-border bg-tech-sidebar flex animate-in slide-in-from-bottom-4 duration-500 rounded-sm">
             {/* Logs Area */}
             <div className="w-2/3 p-3 border-r border-tech-border flex flex-col overflow-hidden">
               <div className="mono-label text-tech-muted mb-2 tracking-[0.1em] flex justify-between">
@@ -4047,13 +4172,13 @@ export default function App() {
             </div>
 
             {/* Actions Area */}
-            <div className="w-1/3 p-4 flex flex-col justify-between whitespace-nowrap overflow-hidden">
+            <div className="w-1/3 p-4 flex flex-col whitespace-nowrap overflow-y-auto scrollbar-hide">
                <div className="space-y-1">
                  <div className="flex justify-between text-[10px] font-mono"><span className="text-tech-muted uppercase">VERTS:</span><span>{stats.pointCount.toLocaleString()}</span></div>
                  <div className="flex justify-between text-[10px] font-mono"><span className="text-tech-muted uppercase">LOAD:</span><span>{(stats.pointCount * 0.0001).toFixed(1)} MB</span></div>
                  <div className="flex justify-between text-[10px] font-mono"><span className="text-tech-muted uppercase">TIME:</span><span>{isProcessing ? '--' : '1.4s'}</span></div>
                </div>
-               <div className="flex flex-col gap-2 mt-4">
+               <div className="flex flex-col gap-2 mt-3">
                  <div className="flex flex-col gap-1.5">
                    <div className="flex items-center justify-between gap-2">
                      <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">XY Scale</label>
@@ -4081,6 +4206,52 @@ export default function App() {
                        className="w-16 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
                      />
                    </div>
+                   {lumStats && (
+                     <div className="flex flex-col gap-0.5 py-1 border-t border-tech-border/40">
+                       <div className="flex justify-between text-[9px] font-mono"><span className="text-tech-muted uppercase">Lum Min</span><span className="text-tech-text">{lumStats.min.toFixed(3)}</span></div>
+                       <div className="flex justify-between text-[9px] font-mono"><span className="text-tech-muted uppercase">Lum Avg</span><span className="text-tech-text">{lumStats.mean.toFixed(3)}</span></div>
+                       <div className="flex justify-between text-[9px] font-mono"><span className="text-tech-muted uppercase">Lum Max</span><span className="text-tech-text">{lumStats.max.toFixed(3)}</span></div>
+                     </div>
+                   )}
+                   <div className="flex items-center justify-between gap-2">
+                     <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Lum Norm</label>
+                     <button
+                       onClick={() => setGlbLumNormEnabled(v => !v)}
+                       className={`w-16 py-0.5 border text-[9px] font-mono uppercase transition-all ${
+                         glbLumNormEnabled
+                           ? 'bg-tech-accent/20 border-tech-accent text-tech-accent'
+                           : 'bg-tech-bg border-tech-border text-tech-muted'
+                       }`}
+                     >{glbLumNormEnabled ? 'ON' : 'OFF'}</button>
+                   </div>
+                   {glbLumNormEnabled && (
+                     <>
+                       <div className="flex items-center justify-between gap-2">
+                         <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Lum Min</label>
+                         <input
+                           type="number"
+                           min="0"
+                           max="0.99"
+                           step="0.05"
+                           value={glbLumNormMin}
+                           onChange={e => setGlbLumNormMin(Math.min(0.99, Math.max(0, parseFloat(e.target.value) || 0)))}
+                           className="w-16 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+                         />
+                       </div>
+                       <div className="flex items-center justify-between gap-2">
+                         <label className="text-[9px] font-mono text-tech-muted uppercase whitespace-nowrap">Lum Max</label>
+                         <input
+                           type="number"
+                           min="0.01"
+                           max="1"
+                           step="0.05"
+                           value={glbLumNormMax}
+                           onChange={e => setGlbLumNormMax(Math.min(1, Math.max(0.01, parseFloat(e.target.value) || 1)))}
+                           className="w-16 bg-tech-bg border border-tech-border text-[9px] font-mono text-tech-text px-1.5 py-0.5 text-right"
+                         />
+                       </div>
+                     </>
+                   )}
                  </div>
                  <div className="flex gap-1.5">
                    <button 

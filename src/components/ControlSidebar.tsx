@@ -92,6 +92,8 @@ type ControlSidebarProps = {
   setSelectedPointIndices: React.Dispatch<React.SetStateAction<number[]>>;
   setShowPointIndices: React.Dispatch<React.SetStateAction<boolean>>;
   setToolInteractionMode: React.Dispatch<React.SetStateAction<ToolInteractionMode>>;
+  selectionRemoveMode: boolean;
+  setSelectionRemoveMode: React.Dispatch<React.SetStateAction<boolean>>;
   setVisibilityBrushAction: React.Dispatch<React.SetStateAction<VisibilityBrushAction>>;
   showPointIndices: boolean;
   projectionMeshOpacityPercent: number;
@@ -188,6 +190,8 @@ export function ControlSidebar({
   selectedPointColorMixed,
   selectedPointCount,
   selectionModeEnabled,
+  selectionRemoveMode,
+  setSelectionRemoveMode,
   showDepthOverlay,
   pointCount,
   setActiveTool,
@@ -538,6 +542,20 @@ export function ControlSidebar({
                   Brush
                 </button>
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setSelectionRemoveMode(false)}
+                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${!selectionRemoveMode ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                  >
+                    Select
+                  </button>
+                  <button
+                    onClick={() => setSelectionRemoveMode(true)}
+                    className={`py-1.5 border rounded text-[10px] uppercase font-mono transition-all ${selectionRemoveMode ? 'border-tech-accent bg-tech-accent/10 text-tech-accent' : 'border-tech-border opacity-50'}`}
+                  >
+                    Deselect
+                  </button>
+                </div>
             </div>
           )}
 
@@ -618,7 +636,7 @@ export function ControlSidebar({
                     <div className="mono-value text-[10px] text-tech-accent font-bold">{selectedPointCount} SELECTED</div>
                     <div className="text-[8px] opacity-40 font-mono uppercase">
                       {toolInteractionMode === 'arrow'
-                        ? 'Click selects, drag draws box, Shift adds, Ctrl removes'
+                        ? 'Click selects, drag draws box, D deselects all, Ctrl removes, Shift moves camera'
                         : 'Brush select accumulates points inside the current brush area'}
                     </div>
                   </div>
@@ -627,7 +645,7 @@ export function ControlSidebar({
                     disabled={selectedPointCount === 0}
                     className="px-2 py-1 border border-tech-border rounded text-[9px] uppercase font-mono hover:border-tech-accent disabled:opacity-20 transition-all"
                   >
-                    Clear
+                    Deselect All
                   </button>
                 </div>
 

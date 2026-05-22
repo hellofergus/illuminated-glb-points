@@ -48,8 +48,6 @@ export const useKeyboardShortcuts = ({
         return;
       }
 
-      if (isEditableTarget(event.target)) return;
-
       if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         if (event.shiftKey) {
@@ -59,6 +57,8 @@ export const useKeyboardShortcuts = ({
         }
         return;
       }
+
+      if (isEditableTarget(event.target)) return;
 
       if (selectionModeEnabledRef.current && event.key === 'Backspace') {
         event.preventDefault();
