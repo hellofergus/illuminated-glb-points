@@ -2292,9 +2292,6 @@ export default function App() {
             if (v.lengthSq() > 0.001) wallAxisV = v.normalize();
           }
 
-          // NDC-Z fallback depth (top-face misses only, not used for wall mode).
-          const centerNdcZ = center3D.clone().project(cam).z;
-
           for (let si = 0; si < totalCount; si++) {
             const distFrac = Math.sqrt(Math.random()); // uniform disk 0..1
             const infl = getBrushInfluence(distFrac, settings.softness);
@@ -2327,13 +2324,7 @@ export default function App() {
             const meshHit = getMeshHitFromScreen(sx, sy);
             if (meshHit && !isWallFaceHit(meshHit)) {
               appendPointAt3DWorld(meshHit.point.clone());
-              continue;
             }
-
-            // No top-face hit: NDC-Z unproject (surface-aligned via center depth).
-            const sNx = (sx / pointer.width) * 2 - 1;
-            const sNy = -(sy / pointer.height) * 2 + 1;
-            appendPointAt3DWorld(new THREE.Vector3(sNx, sNy, centerNdcZ).unproject(cam));
           }
         };
         // ────────────────────────────────────────────────────────────────────────
